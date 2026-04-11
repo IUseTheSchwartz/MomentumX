@@ -25,38 +25,51 @@ const adminLinks = [
 export default function AppShell({ admin = false }) {
   const navigate = useNavigate();
   const links = admin ? adminLinks : agentLinks;
+
+  const [session, setSession] = useState(undefined);
   const [profile, setProfile] = useState(null);
 
   useEffect(() => {
     let mounted = true;
 
-    async function loadProfile() {
-      const {
-        data: { session }
-      } = await supabase.auth.getSession();
+    async function loadProfile(nextSession) {
+      if (!mounted) return;
 
-      if (!session) {
-        if (mounted) setProfile(null);
+      if (!nextSession) {
+        setProfile(null);
         return;
       }
 
       const { data } = await supabase
         .from('profiles')
         .select('*')
-        .eq('id', session.user.id)
-        .single();
+        .eq('id', nextSession.user.id)
+        .maybeSingle();
 
-      if (mounted) {
-        setProfile(data || null);
-      }
+      if (!mounted) return;
+      setProfile(data || null);
     }
 
-    loadProfile();
+    async function init() {
+      const {
+        data: { session: initialSession }
+      } = await supabase.auth.getSession();
+
+      if (!mounted) return;
+
+      setSession(initialSession ?? null);
+      await loadProfile(initialSession ?? null);
+    }
+
+    init();
 
     const {
       data: { subscription }
-    } = supabase.auth.onAuthStateChange(() => {
-      loadProfile();
+    } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
+      if (!mounted) return;
+
+      setSession(nextSession ?? null);
+      await loadProfile(nextSession ?? null);
     });
 
     return () => {
@@ -67,13 +80,15 @@ export default function AppShell({ admin = false }) {
 
   async function signOut() {
     await supabase.auth.signOut();
-    navigate('/');
+    navigate('/', { replace: true });
   }
 
   function switchMode() {
+    if (!session) return;
+
     if (admin) {
       navigate('/app/dashboard');
-    } else {
+    } else if (profile?.is_admin) {
       navigate('/admin/overview');
     }
   }
