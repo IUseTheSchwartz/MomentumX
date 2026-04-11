@@ -25,6 +25,7 @@ export default function Distribution() {
   const [tiers, setTiers] = useState([]);
   const [form, setForm] = useState(blank);
   const [message, setMessage] = useState('');
+  const [runningRuleId, setRunningRuleId] = useState('');
 
   async function load() {
     const [{ data: rules }, { data: tierRows }] = await Promise.all([
@@ -57,6 +58,8 @@ export default function Distribution() {
 
     const payload = {
       tier_id: form.tier_id,
+      frequency: 'weekly',
+      day_of_month: null,
       aged_amount: agedAmount,
       aged_day_of_week: agedAmount > 0 ? form.aged_day_of_week || null : null,
       fresh_amount: freshAmount,
@@ -78,14 +81,43 @@ export default function Distribution() {
   }
 
   async function deleteRule(id) {
-    await supabase.from('distribution_rules').delete().eq('id', id);
+    setMessage('');
+    const { error } = await supabase.from('distribution_rules').delete().eq('id', id);
+
+    if (error) {
+      setMessage(error.message || 'Could not delete rule.');
+      return;
+    }
+
+    setMessage('Rule deleted.');
     load();
   }
 
   async function forceDistribution(row) {
-    alert(
-      `Force distribution triggered for ${row.tiers?.name}. This does not cancel the next scheduled run.`
-    );
+    setMessage('');
+    setRunningRuleId(row.id);
+
+    try {
+      const res = await fetch('/.netlify/functions/distribution-run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ruleId: row.id, force: true })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data?.error || 'Force run failed.');
+      }
+
+      setMessage(
+        `Force run completed for ${row.tiers?.name || 'tier'}: ${data.summary?.assignedAged || 0} aged, ${data.summary?.assignedFresh || 0} fresh.`
+      );
+    } catch (error) {
+      setMessage(error.message || 'Force run failed.');
+    } finally {
+      setRunningRuleId('');
+    }
   }
 
   const columns = [
@@ -131,8 +163,9 @@ export default function Distribution() {
             className="btn btn-primary btn-small"
             onClick={() => forceDistribution(row)}
             type="button"
+            disabled={runningRuleId === row.id}
           >
-            Force Run
+            {runningRuleId === row.id ? 'Running...' : 'Force Run'}
           </button>
         </div>
       )
