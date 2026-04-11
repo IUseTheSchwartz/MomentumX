@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import DataTable from '../../components/DataTable';
 
@@ -90,22 +90,73 @@ function readableSummary(row) {
   return `${adminName} made an admin change`;
 }
 
+function matchesSearch(row, query) {
+  if (!query) return true;
+  const text = [
+    readableSummary(row),
+    row.action,
+    row.target_type,
+    row.target_id,
+    row.profiles?.display_name,
+    row.profiles?.email,
+    JSON.stringify(row.details || {})
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  return text.includes(query.toLowerCase());
+}
+
 export default function Logs() {
   const [rows, setRows] = useState([]);
+  const [search, setSearch] = useState('');
+  const [adminFilter, setAdminFilter] = useState('all');
+  const [actionFilter, setActionFilter] = useState('all');
+  const [pageSize, setPageSize] = useState('50');
 
   useEffect(() => {
     async function load() {
       const { data } = await supabase
         .from('admin_logs')
         .select('*, profiles(display_name, email)')
-        .order('created_at', { ascending: false })
-        .limit(300);
+        .order('created_at', { ascending: false });
 
       setRows(data || []);
     }
 
     load();
   }, []);
+
+  const adminOptions = useMemo(() => {
+    return Array.from(
+      new Set(
+        rows
+          .map((row) => row.profiles?.display_name || row.profiles?.email)
+          .filter(Boolean)
+      )
+    ).sort();
+  }, [rows]);
+
+  const actionOptions = useMemo(() => {
+    return Array.from(new Set(rows.map((row) => row.action).filter(Boolean))).sort();
+  }, [rows]);
+
+  const filteredRows = useMemo(() => {
+    return rows
+      .filter((row) => matchesSearch(row, search))
+      .filter((row) => {
+        if (adminFilter === 'all') return true;
+        const name = row.profiles?.display_name || row.profiles?.email || '';
+        return name === adminFilter;
+      })
+      .filter((row) => (actionFilter === 'all' ? true : row.action === actionFilter));
+  }, [rows, search, adminFilter, actionFilter]);
+
+  const visibleRows = useMemo(() => {
+    if (pageSize === 'all') return filteredRows;
+    return filteredRows.slice(0, Number(pageSize));
+  }, [filteredRows, pageSize]);
 
   const columns = [
     {
@@ -155,14 +206,73 @@ export default function Logs() {
         </div>
       </div>
 
+      <div className="glass" style={{ padding: 12, flexShrink: 0 }}>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+            gap: 10
+          }}
+        >
+          <label>
+            Search
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search logs..."
+            />
+          </label>
+
+          <label>
+            Admin
+            <select value={adminFilter} onChange={(e) => setAdminFilter(e.target.value)}>
+              <option value="all">All</option>
+              {adminOptions.map((admin) => (
+                <option key={admin} value={admin}>
+                  {admin}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            Action
+            <select value={actionFilter} onChange={(e) => setActionFilter(e.target.value)}>
+              <option value="all">All</option>
+              {actionOptions.map((action) => (
+                <option key={action} value={action}>
+                  {action}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            Show
+            <select value={pageSize} onChange={(e) => setPageSize(e.target.value)}>
+              <option value="10">10</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="1000">1000</option>
+              <option value="all">Show All</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="top-gap" style={{ fontSize: 14, opacity: 0.85 }}>
+          Showing {visibleRows.length} of {filteredRows.length} matching logs
+        </div>
+      </div>
+
       <div
+        className="top-gap"
         style={{
           flex: 1,
           minHeight: 0,
           overflow: 'auto'
         }}
       >
-        <DataTable columns={columns} rows={rows} />
+        <DataTable columns={columns} rows={visibleRows} />
       </div>
     </div>
   );
