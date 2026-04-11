@@ -12,8 +12,8 @@ import Dashboard from './pages/app/Dashboard';
 import Leads from './pages/app/Leads';
 import KPI from './pages/app/KPI';
 import Requirements from './pages/app/Requirements';
-import Content from './pages/app/Content';
 import Recordings from './pages/app/Recordings';
+import BookOfBusiness from './pages/app/BookOfBusiness';
 import Support from './pages/app/Support';
 
 import Overview from './pages/admin/Overview';
@@ -44,8 +44,8 @@ export default function App() {
         <Route path="leads" element={<Leads />} />
         <Route path="kpi" element={<KPI />} />
         <Route path="requirements" element={<Requirements />} />
-        <Route path="content" element={<Content />} />
         <Route path="recordings" element={<Recordings />} />
+        <Route path="book" element={<BookOfBusiness />} />
         <Route path="support" element={<Support />} />
       </Route>
 
