@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { currency, formatDate } from '../../lib/utils';
 
@@ -42,6 +42,31 @@ function todayDateKey() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function getStatusBucket(row) {
+  if (row.sale) return 'sold';
+  if (row.do_not_call) return 'dnc';
+  if (row.sit) return 'sit';
+  if (Number(getVisibleCalledCount(row)) > 0) return 'called';
+  return 'new';
+}
+
+function matchesSearch(row, query) {
+  if (!query) return true;
+  const text = [
+    row.first_name,
+    row.last_name,
+    row.phone,
+    row.email,
+    row.lead_type,
+    row.status
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  return text.includes(query.toLowerCase());
+}
+
 export default function Leads() {
   const [rows, setRows] = useState([]);
   const [activeLead, setActiveLead] = useState(null);
@@ -52,6 +77,13 @@ export default function Leads() {
   const [saleError, setSaleError] = useState('');
   const [busyLeadId, setBusyLeadId] = useState(null);
   const [sessionUserId, setSessionUserId] = useState(null);
+
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [leadTypeFilter, setLeadTypeFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [sortOrder, setSortOrder] = useState('newest');
+  const [pageSize, setPageSize] = useState('50');
 
   async function load() {
     const {
@@ -66,8 +98,7 @@ export default function Leads() {
       .from('leads')
       .select('*')
       .eq('assigned_to', session.user.id)
-      .order('created_at', { ascending: false })
-      .limit(100);
+      .order('created_at', { ascending: false });
 
     if (error) {
       console.error('Failed to load leads:', error);
@@ -94,7 +125,6 @@ export default function Leads() {
       .eq('id', id);
 
     const scopedQuery = sessionUserId ? query.eq('assigned_to', sessionUserId) : query;
-
     const { error } = await scopedQuery;
 
     if (error) throw error;
@@ -165,9 +195,7 @@ export default function Leads() {
     try {
       await persistLeadPatch(row.id, patch);
       replaceRowLocally(row.id, patch);
-      await upsertKpiDelta({
-        dials: selectedAmount
-      });
+      await upsertKpiDelta({ dials: selectedAmount });
     } catch (error) {
       console.error('Failed to mark called:', error);
       alert(error.message || 'Failed to mark lead as called.');
@@ -187,10 +215,7 @@ export default function Leads() {
     try {
       await persistLeadPatch(row.id, patch);
       replaceRowLocally(row.id, patch);
-
-      await upsertKpiDelta({
-        contacts: 1
-      });
+      await upsertKpiDelta({ contacts: 1 });
     } catch (error) {
       console.error('Failed to mark DNC:', error);
       alert(error.message || 'Failed to update lead.');
@@ -210,11 +235,7 @@ export default function Leads() {
     try {
       await persistLeadPatch(row.id, patch);
       replaceRowLocally(row.id, patch);
-
-      await upsertKpiDelta({
-        contacts: 1,
-        sits: 1
-      });
+      await upsertKpiDelta({ contacts: 1, sits: 1 });
     } catch (error) {
       console.error('Failed to mark sit:', error);
       alert(error.message || 'Failed to update lead.');
@@ -238,7 +259,6 @@ export default function Leads() {
 
   async function submitSale(e) {
     e.preventDefault();
-
     if (!activeLead) return;
 
     setSavingSale(true);
@@ -260,7 +280,6 @@ export default function Leads() {
 
       await persistLeadPatch(activeLead.id, patch);
       replaceRowLocally(activeLead.id, patch);
-
       await upsertKpiDelta({
         contacts: 1,
         sales: 1,
@@ -279,7 +298,6 @@ export default function Leads() {
 
   async function saveNotes(row) {
     const note = noteDrafts[row.id] ?? row.notes ?? '';
-
     setBusyLeadId(row.id);
 
     try {
@@ -292,6 +310,31 @@ export default function Leads() {
       setBusyLeadId(null);
     }
   }
+
+  const leadTypeOptions = useMemo(() => {
+    return Array.from(new Set(rows.map((row) => row.lead_type).filter(Boolean))).sort();
+  }, [rows]);
+
+  const filteredRows = useMemo(() => {
+    const next = rows
+      .filter((row) => matchesSearch(row, search))
+      .filter((row) => (statusFilter === 'all' ? true : getStatusBucket(row) === statusFilter))
+      .filter((row) => (leadTypeFilter === 'all' ? true : row.lead_type === leadTypeFilter))
+      .filter((row) => (categoryFilter === 'all' ? true : row.lead_category === categoryFilter));
+
+    next.sort((a, b) => {
+      const aTime = new Date(a.created_at || 0).getTime();
+      const bTime = new Date(b.created_at || 0).getTime();
+      return sortOrder === 'oldest' ? aTime - bTime : bTime - aTime;
+    });
+
+    return next;
+  }, [rows, search, statusFilter, leadTypeFilter, categoryFilter, sortOrder]);
+
+  const visibleRows = useMemo(() => {
+    if (pageSize === 'all') return filteredRows;
+    return filteredRows.slice(0, Number(pageSize));
+  }, [filteredRows, pageSize]);
 
   return (
     <div
@@ -307,12 +350,87 @@ export default function Leads() {
       <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
           <h1>Leads</h1>
-          <p>Work leads, log dispositions, and record sold business properly.</p>
+          <p>Work leads, filter fast, and record sold business properly.</p>
+        </div>
+      </div>
+
+      <div className="glass" style={{ padding: 12, flexShrink: 0 }}>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
+            gap: 10
+          }}
+        >
+          <label>
+            Search
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Name, phone, email..."
+            />
+          </label>
+
+          <label>
+            Status
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+              <option value="all">All</option>
+              <option value="new">New</option>
+              <option value="called">Called</option>
+              <option value="sit">Sit</option>
+              <option value="sold">Sold</option>
+              <option value="dnc">Do Not Call</option>
+            </select>
+          </label>
+
+          <label>
+            Lead Type
+            <select value={leadTypeFilter} onChange={(e) => setLeadTypeFilter(e.target.value)}>
+              <option value="all">All</option>
+              {leadTypeOptions.map((type) => (
+                <option key={type} value={type}>
+                  {type}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            Fresh / Aged
+            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+              <option value="all">All</option>
+              <option value="fresh">Fresh</option>
+              <option value="aged">Aged</option>
+            </select>
+          </label>
+
+          <label>
+            Sort
+            <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)}>
+              <option value="newest">Newest to Oldest</option>
+              <option value="oldest">Oldest to Newest</option>
+            </select>
+          </label>
+
+          <label>
+            Show
+            <select value={pageSize} onChange={(e) => setPageSize(e.target.value)}>
+              <option value="10">10</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="1000">1000</option>
+              <option value="all">Show All</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="top-gap" style={{ fontSize: 14, opacity: 0.85 }}>
+          Showing {visibleRows.length} of {filteredRows.length} matching leads
         </div>
       </div>
 
       <div
-        className="lead-list"
+        className="lead-list top-gap"
         style={{
           flex: 1,
           minHeight: 0,
@@ -320,7 +438,7 @@ export default function Leads() {
           paddingRight: 4
         }}
       >
-        {rows.map((row) => {
+        {visibleRows.map((row) => {
           const visibleCalledCount = getVisibleCalledCount(row);
           const selectedCallAmount = Number(callAmounts[row.id] || 1);
 
@@ -332,7 +450,7 @@ export default function Leads() {
                     {row.first_name || '—'} {row.last_name || ''}
                   </div>
                   <div className="lead-meta">
-                    {row.phone || 'No phone'} · {row.lead_type || '—'} · Created {formatDate(row.created_at)}
+                    {row.phone || 'No phone'} · {row.lead_type || '—'} · {row.lead_category || '—'} · Created {formatDate(row.created_at)}
                   </div>
                 </div>
 
@@ -452,6 +570,12 @@ export default function Leads() {
             </div>
           );
         })}
+
+        {!visibleRows.length ? (
+          <div className="glass" style={{ padding: 16 }}>
+            No leads match your filters.
+          </div>
+        ) : null}
       </div>
 
       {activeLead ? (
