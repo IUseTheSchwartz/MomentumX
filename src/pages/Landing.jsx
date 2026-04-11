@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import Starfield from '../components/Starfield';
 
 export default function Landing() {
   const navigate = useNavigate();
-  const infoRef = useRef(null);
   const [showX, setShowX] = useState(false);
 
   useEffect(() => {
@@ -37,19 +36,14 @@ export default function Landing() {
       }
     });
 
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) setShowX(true);
-      },
-      { threshold: 0.35 }
-    );
-
-    if (infoRef.current) observer.observe(infoRef.current);
+    const timer = setTimeout(() => {
+      setShowX(true);
+    }, 500);
 
     return () => {
       mounted = false;
       subscription.unsubscribe();
-      observer.disconnect();
+      clearTimeout(timer);
     };
   }, [navigate]);
 
@@ -85,7 +79,7 @@ export default function Landing() {
         </button>
       </section>
 
-      <section className="landing-info" ref={infoRef}>
+      <section className="landing-info">
         <div className="info-block glass">
           <h2>What the system is used for</h2>
           <p>
