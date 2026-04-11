@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { currency, formatDate } from '../../lib/utils';
 
@@ -85,6 +85,15 @@ export default function Leads() {
   const [sortOrder, setSortOrder] = useState('newest');
   const [pageSize, setPageSize] = useState('50');
 
+  const [selectedRecordingLeadId, setSelectedRecordingLeadId] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingStatus, setRecordingStatus] = useState('');
+  const [savingRecording, setSavingRecording] = useState(false);
+
+  const mediaRecorderRef = useRef(null);
+  const streamRef = useRef(null);
+  const chunksRef = useRef([]);
+
   async function load() {
     const {
       data: { session }
@@ -110,6 +119,20 @@ export default function Leads() {
 
   useEffect(() => {
     load();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      try {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+        }
+      } catch {}
+
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
   }, []);
 
   function replaceRowLocally(id, patch) {
@@ -311,6 +334,109 @@ export default function Leads() {
     }
   }
 
+  async function startRecording() {
+    try {
+      setRecordingStatus('');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      chunksRef.current = [];
+
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstart = () => {
+        setIsRecording(true);
+        setRecordingStatus('Recording...');
+      };
+
+      mediaRecorder.start();
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+      setRecordingStatus(error.message || 'Could not start recording.');
+    }
+  }
+
+  async function stopRecording() {
+    if (!mediaRecorderRef.current) return;
+    if (!sessionUserId) {
+      setRecordingStatus('No session found.');
+      return;
+    }
+
+    setSavingRecording(true);
+
+    try {
+      const stoppedBlob = await new Promise((resolve, reject) => {
+        const recorder = mediaRecorderRef.current;
+
+        recorder.onstop = () => {
+          try {
+            const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+            resolve(blob);
+          } catch (error) {
+            reject(error);
+          }
+        };
+
+        recorder.onerror = (event) => {
+          reject(event?.error || new Error('Recording failed.'));
+        };
+
+        recorder.stop();
+      });
+
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+
+      const selectedLead = rows.find((row) => row.id === selectedRecordingLeadId) || null;
+      const fileName = `recording-${sessionUserId}-${Date.now()}.webm`;
+      const storagePath = `${sessionUserId}/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('lead-recordings')
+        .upload(storagePath, stoppedBlob, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: 'audio/webm'
+        });
+
+      if (uploadError) throw uploadError;
+
+      const { data: publicUrlData } = supabase.storage
+        .from('lead-recordings')
+        .getPublicUrl(storagePath);
+
+      const recordingUrl = publicUrlData?.publicUrl || null;
+
+      const { error: insertError } = await supabase.from('lead_recordings').insert({
+        agent_id: sessionUserId,
+        lead_id: selectedLead?.id || null,
+        file_name: fileName,
+        recording_url: recordingUrl
+      });
+
+      if (insertError) throw insertError;
+
+      setRecordingStatus('Recording saved.');
+    } catch (error) {
+      console.error('Failed to save recording:', error);
+      setRecordingStatus(error.message || 'Failed to save recording.');
+    } finally {
+      mediaRecorderRef.current = null;
+      chunksRef.current = [];
+      setIsRecording(false);
+      setSavingRecording(false);
+    }
+  }
+
   const leadTypeOptions = useMemo(() => {
     return Array.from(new Set(rows.map((row) => row.lead_type).filter(Boolean))).sort();
   }, [rows]);
@@ -352,7 +478,51 @@ export default function Leads() {
           <h1>Leads</h1>
           <p>Work leads, filter fast, and record sold business properly.</p>
         </div>
+
+        <div style={{ display: 'flex', gap: 10, alignItems: 'end', flexWrap: 'wrap' }}>
+          <label style={{ minWidth: 220 }}>
+            Attach Recording To
+            <select
+              value={selectedRecordingLeadId}
+              onChange={(e) => setSelectedRecordingLeadId(e.target.value)}
+              disabled={isRecording || savingRecording}
+            >
+              <option value="">No lead selected</option>
+              {rows.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {`${row.first_name || ''} ${row.last_name || ''}`.trim() || row.phone || row.id}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {!isRecording ? (
+            <button
+              className="btn btn-primary"
+              type="button"
+              onClick={startRecording}
+              disabled={savingRecording}
+            >
+              Record
+            </button>
+          ) : (
+            <button
+              className="btn btn-danger"
+              type="button"
+              onClick={stopRecording}
+              disabled={savingRecording}
+            >
+              {savingRecording ? 'Saving...' : 'Stop'}
+            </button>
+          )}
+        </div>
       </div>
+
+      {recordingStatus ? (
+        <div className="glass" style={{ padding: 12, flexShrink: 0, marginBottom: 12 }}>
+          {recordingStatus}
+        </div>
+      ) : null}
 
       <div className="glass" style={{ padding: 12, flexShrink: 0 }}>
         <div
