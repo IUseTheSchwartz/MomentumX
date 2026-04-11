@@ -1,76 +1,100 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import DataTable from '../../components/DataTable';
-import { formatDate, currency } from '../../lib/utils';
-
-const initialForm = {
-  entry_date: new Date().toISOString().slice(0, 10),
-  dials: '',
-  contacts: '',
-  sits: '',
-  sales: '',
-  close_rate: '',
-  premium_submitted: '',
-  ap_sold: ''
-};
+import StatCard from '../../components/StatCard';
+import { currency, formatDate } from '../../lib/utils';
 
 export default function KPI() {
-  const [form, setForm] = useState(initialForm);
   const [rows, setRows] = useState([]);
-
-  async function loadRows() {
-    const {
-      data: { session }
-    } = await supabase.auth.getSession();
-
-    if (!session) return;
-
-    const { data } = await supabase
-      .from('kpi_entries')
-      .select('*')
-      .eq('agent_id', session.user.id)
-      .order('entry_date', { ascending: false });
-
-    setRows(data || []);
-  }
+  const [view, setView] = useState('daily');
 
   useEffect(() => {
+    async function loadRows() {
+      const {
+        data: { session }
+      } = await supabase.auth.getSession();
+
+      if (!session) return;
+
+      const { data } = await supabase
+        .from('kpi_entries')
+        .select('*')
+        .eq('agent_id', session.user.id)
+        .order('entry_date', { ascending: false });
+
+      setRows(data || []);
+    }
+
     loadRows();
   }, []);
 
-  async function submit(e) {
-    e.preventDefault();
+  const groupedRows = useMemo(() => {
+    if (view === 'daily') return rows;
 
-    const {
-      data: { session }
-    } = await supabase.auth.getSession();
+    const map = new Map();
 
-    if (!session) return;
+    for (const row of rows) {
+      const d = new Date(row.entry_date);
+      let key = row.entry_date;
 
-    const payload = {
-      agent_id: session.user.id,
-      entry_date: form.entry_date,
-      dials: Number(form.dials || 0),
-      contacts: Number(form.contacts || 0),
-      sits: Number(form.sits || 0),
-      sales: Number(form.sales || 0),
-      close_rate: Number(form.close_rate || 0),
-      premium_submitted: Number(form.premium_submitted || 0),
-      ap_sold: Number(form.ap_sold || 0)
-    };
+      if (view === 'weekly') {
+        const copy = new Date(d);
+        const day = copy.getDay();
+        const diff = copy.getDate() - day + (day === 0 ? -6 : 1);
+        copy.setDate(diff);
+        key = copy.toISOString().slice(0, 10);
+      }
 
-    await supabase.from('kpi_entries').insert(payload);
-    setForm(initialForm);
-    loadRows();
-  }
+      if (view === 'monthly') {
+        key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+      }
+
+      if (!map.has(key)) {
+        map.set(key, {
+          entry_date: key,
+          dials: 0,
+          contacts: 0,
+          sits: 0,
+          sales: 0,
+          close_rate: 0,
+          premium_submitted: 0,
+          ap_sold: 0
+        });
+      }
+
+      const current = map.get(key);
+      current.dials += Number(row.dials || 0);
+      current.contacts += Number(row.contacts || 0);
+      current.sits += Number(row.sits || 0);
+      current.sales += Number(row.sales || 0);
+      current.premium_submitted += Number(row.premium_submitted || 0);
+      current.ap_sold += Number(row.ap_sold || 0);
+    }
+
+    return Array.from(map.values()).sort((a, b) => b.entry_date.localeCompare(a.entry_date));
+  }, [rows, view]);
+
+  const totals = useMemo(() => {
+    return groupedRows.reduce(
+      (acc, row) => {
+        acc.dials += Number(row.dials || 0);
+        acc.contacts += Number(row.contacts || 0);
+        acc.sits += Number(row.sits || 0);
+        acc.sales += Number(row.sales || 0);
+        acc.premium += Number(row.premium_submitted || 0);
+        acc.ap += Number(row.ap_sold || 0);
+        return acc;
+      },
+      { dials: 0, contacts: 0, sits: 0, sales: 0, premium: 0, ap: 0 }
+    );
+  }, [groupedRows]);
 
   const columns = [
-    { key: 'entry_date', label: 'Date', render: (v) => formatDate(v) },
+    { key: 'entry_date', label: view === 'daily' ? 'Day' : view === 'weekly' ? 'Week' : 'Month', render: (v) => formatDate(v) },
     { key: 'dials', label: 'Dials' },
     { key: 'contacts', label: 'Contacts' },
     { key: 'sits', label: 'Sits' },
     { key: 'sales', label: 'Sales' },
-    { key: 'close_rate', label: 'Close %' },
     { key: 'premium_submitted', label: 'Premium', render: (v) => currency(v) },
     { key: 'ap_sold', label: 'AP Sold', render: (v) => currency(v) }
   ];
@@ -80,67 +104,36 @@ export default function KPI() {
       <div className="page-header">
         <div>
           <h1>KPI</h1>
-          <p>Track daily numbers and keep the pressure visible.</p>
+          <p>Past KPI history by day, week, and month.</p>
+        </div>
+
+        <div className="segmented">
+          <button className={view === 'daily' ? 'seg-btn active' : 'seg-btn'} onClick={() => setView('daily')}>
+            Daily
+          </button>
+          <button className={view === 'weekly' ? 'seg-btn active' : 'seg-btn'} onClick={() => setView('weekly')}>
+            Weekly
+          </button>
+          <button className={view === 'monthly' ? 'seg-btn active' : 'seg-btn'} onClick={() => setView('monthly')}>
+            Monthly
+          </button>
         </div>
       </div>
 
-      <form className="form glass" onSubmit={submit}>
-        <div className="form-grid">
-          <label>
-            Date
-            <input
-              type="date"
-              value={form.entry_date}
-              onChange={(e) => setForm((s) => ({ ...s, entry_date: e.target.value }))}
-            />
-          </label>
+      <div className="grid grid-4">
+        <StatCard label="Dials" value={totals.dials} />
+        <StatCard label="Contacts" value={totals.contacts} />
+        <StatCard label="Sits" value={totals.sits} />
+        <StatCard label="Sales" value={totals.sales} />
+      </div>
 
-          <label>
-            Dials
-            <input value={form.dials} onChange={(e) => setForm((s) => ({ ...s, dials: e.target.value }))} />
-          </label>
-
-          <label>
-            Contacts
-            <input value={form.contacts} onChange={(e) => setForm((s) => ({ ...s, contacts: e.target.value }))} />
-          </label>
-
-          <label>
-            Sits
-            <input value={form.sits} onChange={(e) => setForm((s) => ({ ...s, sits: e.target.value }))} />
-          </label>
-
-          <label>
-            Sales
-            <input value={form.sales} onChange={(e) => setForm((s) => ({ ...s, sales: e.target.value }))} />
-          </label>
-
-          <label>
-            Close Rate
-            <input value={form.close_rate} onChange={(e) => setForm((s) => ({ ...s, close_rate: e.target.value }))} />
-          </label>
-
-          <label>
-            Premium Submitted
-            <input
-              value={form.premium_submitted}
-              onChange={(e) => setForm((s) => ({ ...s, premium_submitted: e.target.value }))}
-            />
-          </label>
-
-          <label>
-            AP Sold
-            <input value={form.ap_sold} onChange={(e) => setForm((s) => ({ ...s, ap_sold: e.target.value }))} />
-          </label>
-        </div>
-
-        <button className="btn btn-primary" type="submit">
-          Save KPI
-        </button>
-      </form>
+      <div className="grid grid-2 top-gap">
+        <StatCard label="Premium Submitted" value={currency(totals.premium)} />
+        <StatCard label="AP Sold" value={currency(totals.ap)} />
+      </div>
 
       <div className="top-gap">
-        <DataTable columns={columns} rows={rows} />
+        <DataTable columns={columns} rows={groupedRows} />
       </div>
     </div>
   );
