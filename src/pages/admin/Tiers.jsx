@@ -5,39 +5,69 @@ import DataTable from '../../components/DataTable';
 export default function Tiers() {
   const [rows, setRows] = useState([]);
 
+  async function load() {
+    const { data } = await supabase
+      .from('tiers')
+      .select('*')
+      .order('sort_order');
+
+    setRows(data || []);
+  }
+
   useEffect(() => {
-    async function load() {
-      const { data } = await supabase
-        .from('tiers')
-        .select('*')
-        .order('sort_order');
-
-      setRows(data || []);
-    }
-
     load();
   }, []);
 
+  async function updateTier(id, patch) {
+    await supabase.from('tiers').update(patch).eq('id', id);
+    load();
+  }
+
   const columns = [
     { key: 'name', label: 'Tier' },
+
     {
       key: 'duration_days',
       label: 'Duration',
       render: (value, row) => {
-        if (row.manual_only) return 'Manual only';
-        return value ? `${value} days` : '—';
+        const isManual =
+          row.slug === 'tier-2' || row.slug === 'tier-3';
+
+        if (isManual) {
+          return <span>Manual / Infinite</span>;
+        }
+
+        return (
+          <input
+            type="number"
+            value={value || 0}
+            onChange={(e) =>
+              updateTier(row.id, {
+                duration_days: Number(e.target.value)
+              })
+            }
+            style={{ width: 80 }}
+          />
+        );
       }
     },
-    {
-      key: 'manual_only',
-      label: 'Placement',
-      render: (value) => (value ? 'Admin only' : 'Automatic / duration-based')
-    },
+
     {
       key: 'kpi_required',
       label: 'KPI Required',
-      render: (value) => (value ? 'Yes' : 'No')
+      render: (value, row) => (
+        <button
+          className="btn btn-ghost btn-small"
+          onClick={() =>
+            updateTier(row.id, { kpi_required: !value })
+          }
+          type="button"
+        >
+          {value ? 'Yes' : 'No'}
+        </button>
+      )
     },
+
     { key: 'description', label: 'Description' }
   ];
 
@@ -46,7 +76,7 @@ export default function Tiers() {
       <div className="page-header">
         <div>
           <h1>Tiers</h1>
-          <p>Tier structure and placement rules.</p>
+          <p>Edit tier duration and structure.</p>
         </div>
       </div>
 
