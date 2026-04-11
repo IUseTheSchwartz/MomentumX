@@ -2,6 +2,49 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForStableSession() {
+  const first = await supabase.auth.getSession();
+  if (first.data.session) return first.data.session;
+
+  return new Promise((resolve) => {
+    let resolved = false;
+
+    const finish = (session) => {
+      if (resolved) return;
+      resolved = true;
+      subscription?.unsubscribe();
+      clearTimeout(timeoutId);
+      resolve(session || null);
+    };
+
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (
+        session &&
+        (event === 'SIGNED_IN' ||
+          event === 'TOKEN_REFRESHED' ||
+          event === 'INITIAL_SESSION')
+      ) {
+        finish(session);
+      }
+
+      if (!session && event === 'INITIAL_SESSION') {
+        finish(null);
+      }
+    });
+
+    const timeoutId = setTimeout(async () => {
+      const retry = await supabase.auth.getSession();
+      finish(retry.data.session || null);
+    }, 2500);
+  });
+}
+
 export default function AuthCallback() {
   const navigate = useNavigate();
   const [message, setMessage] = useState('Verifying access...');
@@ -9,28 +52,16 @@ export default function AuthCallback() {
   useEffect(() => {
     let active = true;
 
-    async function getSessionWithRetry() {
-      for (let i = 0; i < 10; i += 1) {
-        const {
-          data: { session }
-        } = await supabase.auth.getSession();
-
-        if (session) return session;
-
-        await new Promise((resolve) => setTimeout(resolve, 300));
-      }
-
-      return null;
-    }
-
     async function run() {
-      const session = await getSessionWithRetry();
+      const session = await waitForStableSession();
+
+      if (!active) return;
 
       if (!session) {
-        if (active) {
-          setMessage('No session found. Sending you back...');
-          setTimeout(() => navigate('/', { replace: true }), 800);
-        }
+        setMessage('Session not found. Sending you back...');
+        setTimeout(() => {
+          if (active) navigate('/', { replace: true });
+        }, 800);
         return;
       }
 
@@ -38,36 +69,45 @@ export default function AuthCallback() {
 
       if (!providerToken) {
         await supabase.auth.signOut();
-        navigate('/denied', { replace: true });
+        if (active) navigate('/denied', { replace: true });
         return;
       }
 
-      const response = await fetch('/.netlify/functions/discord-membership-check', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          providerToken,
-          userId: session.user.id,
-          email: session.user.email,
-          fullName:
-            session.user.user_metadata?.full_name ||
-            session.user.user_metadata?.name ||
-            session.user.email ||
-            'Momentum Agent',
-          avatarUrl: session.user.user_metadata?.avatar_url || null,
-          discordId: session.user.user_metadata?.provider_id || null,
-          discordUsername:
-            session.user.user_metadata?.preferred_username ||
-            session.user.user_metadata?.full_name ||
-            session.user.email
-        })
-      });
+      setMessage('Checking membership...');
 
-      const data = await response.json();
+      let response;
+      let data;
+
+      try {
+        response = await fetch('/.netlify/functions/discord-membership-check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            providerToken,
+            userId: session.user.id,
+            email: session.user.email,
+            fullName:
+              session.user.user_metadata?.full_name ||
+              session.user.user_metadata?.name ||
+              session.user.email ||
+              'Momentum Agent',
+            avatarUrl: session.user.user_metadata?.avatar_url || null,
+            discordId: session.user.user_metadata?.provider_id || null,
+            discordUsername:
+              session.user.user_metadata?.preferred_username ||
+              session.user.user_metadata?.full_name ||
+              session.user.email
+          })
+        });
+
+        data = await response.json();
+      } catch {
+        data = null;
+      }
 
       if (!active) return;
 
-      if (!response.ok || !data.ok) {
+      if (!response?.ok || !data?.ok) {
         await supabase.auth.signOut();
         navigate('/denied', { replace: true });
         return;
@@ -75,6 +115,22 @@ export default function AuthCallback() {
 
       if (data.banned) {
         navigate('/ineligible', { replace: true });
+        return;
+      }
+
+      await delay(150);
+
+      const {
+        data: { session: refreshedSession }
+      } = await supabase.auth.getSession();
+
+      if (!active) return;
+
+      if (!refreshedSession) {
+        setMessage('Session not found. Sending you back...');
+        setTimeout(() => {
+          if (active) navigate('/', { replace: true });
+        }, 800);
         return;
       }
 
