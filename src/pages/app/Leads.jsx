@@ -47,6 +47,7 @@ export default function Leads() {
   const [savingSale, setSavingSale] = useState(false);
   const [saleError, setSaleError] = useState('');
   const [busyLeadId, setBusyLeadId] = useState(null);
+  const [sessionUserId, setSessionUserId] = useState(null);
 
   async function load() {
     const {
@@ -54,6 +55,8 @@ export default function Leads() {
     } = await supabase.auth.getSession();
 
     if (!session) return;
+
+    setSessionUserId(session.user.id);
 
     const { data, error } = await supabase
       .from('leads')
@@ -74,15 +77,26 @@ export default function Leads() {
     load();
   }, []);
 
+  function replaceRow(updatedRow) {
+    setRows((prev) => prev.map((row) => (row.id === updatedRow.id ? { ...row, ...updatedRow } : row)));
+  }
+
   async function updateLead(id, patch) {
-    const { error } = await supabase
+    const query = supabase
       .from('leads')
       .update(patch)
       .eq('id', id);
 
+    const scopedQuery = sessionUserId ? query.eq('assigned_to', sessionUserId) : query;
+
+    const { data, error } = await scopedQuery
+      .select('*')
+      .single();
+
     if (error) throw error;
 
-    await load();
+    replaceRow(data);
+    return data;
   }
 
   async function markCalled(row) {
@@ -174,16 +188,14 @@ export default function Leads() {
         notes: saleForm.notes?.trim() || null
       };
 
-      const { error } = await supabase
-        .from('leads')
-        .update(patch)
-        .eq('id', activeLead.id);
+      const updatedLead = await updateLead(activeLead.id, patch);
 
-      if (error) throw error;
-
-      await load();
       setActiveLead(null);
       setSaleForm(saleDefaults);
+
+      if (updatedLead) {
+        replaceRow(updatedLead);
+      }
     } catch (error) {
       console.error('Failed to save sale:', error);
       setSaleError(error.message || 'Failed to save sale.');
