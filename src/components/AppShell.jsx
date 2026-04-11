@@ -1,12 +1,12 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 const agentLinks = [
   ['/app/dashboard', 'Dashboard'],
   ['/app/leads', 'Leads'],
   ['/app/kpi', 'KPI'],
-  ['/app/requirements', 'Requirement Checklist'],
+  ['/app/requirements', 'Requirements'],
   ['/app/recordings', 'Recordings'],
   ['/app/book', 'Book of Business'],
   ['/app/support', 'Support']
@@ -15,7 +15,6 @@ const agentLinks = [
 const adminLinks = [
   ['/admin/overview', 'Overview'],
   ['/admin/agents', 'Agents'],
-  ['/admin/agent-requirements', 'Agents Requirements'],
   ['/admin/leads', 'Leads'],
   ['/admin/tiers', 'Tiers'],
   ['/admin/distribution', 'Distribution'],
@@ -29,13 +28,12 @@ export default function AppShell({ admin = false }) {
 
   const [session, setSession] = useState(undefined);
   const [profile, setProfile] = useState(null);
-  const mountedRef = useRef(true);
 
   useEffect(() => {
-    mountedRef.current = true;
+    let mounted = true;
 
     async function loadProfile(nextSession) {
-      if (!mountedRef.current) return;
+      if (!mounted) return;
 
       if (!nextSession) {
         setProfile(null);
@@ -48,50 +46,53 @@ export default function AppShell({ admin = false }) {
         .eq('id', nextSession.user.id)
         .maybeSingle();
 
-      if (!mountedRef.current) return;
+      if (!mounted) return;
       setProfile(data || null);
     }
 
-    async function refreshAuthState() {
+    async function refreshFromSession() {
       const {
-        data: { session: nextSession }
+        data: { session: currentSession }
       } = await supabase.auth.getSession();
 
-      if (!mountedRef.current) return;
+      if (!mounted) return;
 
-      setSession(nextSession ?? null);
-      await loadProfile(nextSession ?? null);
+      setSession(currentSession ?? null);
+      await loadProfile(currentSession ?? null);
     }
 
-    refreshAuthState();
+    async function init() {
+      await refreshFromSession();
+    }
+
+    init();
 
     const {
       data: { subscription }
     } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
-      if (!mountedRef.current) return;
+      if (!mounted) return;
 
       setSession(nextSession ?? null);
       await loadProfile(nextSession ?? null);
     });
 
-    const handleFocus = () => {
-      refreshAuthState();
-    };
+    async function handleVisibilityWake() {
+      if (document.visibilityState !== 'visible') return;
+      await refreshFromSession();
+    }
 
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        refreshAuthState();
-      }
-    };
+    async function handleWindowFocus() {
+      await refreshFromSession();
+    }
 
-    window.addEventListener('focus', handleFocus);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+    document.addEventListener('visibilitychange', handleVisibilityWake);
+    window.addEventListener('focus', handleWindowFocus);
 
     return () => {
-      mountedRef.current = false;
+      mounted = false;
       subscription.unsubscribe();
-      window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      document.removeEventListener('visibilitychange', handleVisibilityWake);
+      window.removeEventListener('focus', handleWindowFocus);
     };
   }, []);
 
