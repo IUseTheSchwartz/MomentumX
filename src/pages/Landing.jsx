@@ -1,15 +1,15 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import Starfield from '../components/Starfield';
 
 export default function Landing() {
   const navigate = useNavigate();
+  const infoRef = useRef(null);
+  const [showX, setShowX] = useState(false);
 
   useEffect(() => {
     const hash = window.location.hash || '';
-
-    // If Supabase drops us back on /#access_token=...
     if (hash.includes('access_token=')) {
       navigate('/auth/callback', { replace: true });
       return;
@@ -37,9 +37,19 @@ export default function Landing() {
       }
     });
 
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) setShowX(true);
+      },
+      { threshold: 0.35 }
+    );
+
+    if (infoRef.current) observer.observe(infoRef.current);
+
     return () => {
       mounted = false;
       subscription.unsubscribe();
+      observer.disconnect();
     };
   }, [navigate]);
 
@@ -56,28 +66,58 @@ export default function Landing() {
   }
 
   return (
-    <div className="landing">
+    <div className="landing landing-full">
       <Starfield />
 
-      <div className="landing-inner">
-        <div className="hero glass">
-          <div className="eyebrow">Momentum Financial</div>
-          <h1>Momentum X</h1>
-          <p className="hero-copy">
-            Lead distribution. KPI pressure. Tier control. Agent ops with a futuristic command-center feel.
-          </p>
+      <section className="landing-hero">
+        <div className="hero-wordmark">
+          <span className="momentum-word">MOMENTUM</span>
+          <span className={showX ? 'x-mark visible' : 'x-mark'}>X</span>
+        </div>
 
-          <div className="hero-actions">
-            <button className="btn btn-primary" onClick={loginWithDiscord}>
-              Login with Discord
-            </button>
+        <p className="landing-subcopy">
+          Performance-based lead access for agents who produce, stay accountable,
+          and scale with consistency.
+        </p>
+
+        <button className="btn btn-primary landing-login" onClick={loginWithDiscord}>
+          Login with Discord
+        </button>
+      </section>
+
+      <section className="landing-info" ref={infoRef}>
+        <div className="info-block glass">
+          <h2>What the system is used for</h2>
+          <p>
+            Momentum X is built to get new agents producing faster, reward performance,
+            scale top producers, and maximize every lead opportunity.
+          </p>
+        </div>
+
+        <div className="info-grid">
+          <div className="info-card glass">
+            <h3>Tier 1</h3>
+            <p>Foundation phase. Build work ethic, activity, and consistency.</p>
           </div>
 
-          <div className="hero-foot">
-            Must be a member of the Momentum Financial Discord server.
+          <div className="info-card glass">
+            <h3>Tier 2</h3>
+            <p>Development phase. Proven producers get access to better lead flow and more opportunity.</p>
+          </div>
+
+          <div className="info-card glass">
+            <h3>Tier 3</h3>
+            <p>Scale phase. Reserved for strong, consistent producers who maintain volume.</p>
           </div>
         </div>
-      </div>
+
+        <div className="info-block glass">
+          <h2>Bottom line</h2>
+          <p>
+            Produce → Earn More Leads → Scale Faster → Keep More Income
+          </p>
+        </div>
+      </section>
     </div>
   );
 }
