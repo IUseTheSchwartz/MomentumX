@@ -175,7 +175,8 @@ export default function LeadsAdmin() {
           batch_name: finalBatchName,
           lead_type: leadType,
           lead_category: leadCategory,
-          total_uploaded: parsedRows.length
+          total_uploaded: parsedRows.length,
+          summary: `Imported ${parsedRows.length} ${leadCategory} ${leadType} leads into batch "${finalBatchName}".`
         }
       });
 
@@ -204,15 +205,24 @@ export default function LeadsAdmin() {
   ];
 
   return (
-    <div className="page">
-      <div className="page-header">
+    <div
+      className="page"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        minHeight: 0,
+        overflow: 'hidden'
+      }}
+    >
+      <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
           <h1>Leads</h1>
           <p>Upload lead inventory and review current lead records.</p>
         </div>
       </div>
 
-      <form className="form glass" onSubmit={handleUpload}>
+      <form className="form glass" onSubmit={handleUpload} style={{ flexShrink: 0 }}>
         <div className="form-grid">
           <label>
             Lead Type
@@ -259,7 +269,14 @@ export default function LeadsAdmin() {
         {message ? <div className="top-gap">{message}</div> : null}
       </form>
 
-      <div className="top-gap">
+      <div
+        className="top-gap"
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflow: 'auto'
+        }}
+      >
         <DataTable columns={columns} rows={rows} />
       </div>
     </div>
