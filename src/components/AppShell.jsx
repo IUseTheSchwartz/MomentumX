@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
+import { useEffect, useState } from 'react';
 
 const agentLinks = [
   ['/app/dashboard', 'Dashboard'],
@@ -17,12 +18,52 @@ const adminLinks = [
   ['/admin/leads', 'Leads'],
   ['/admin/tiers', 'Tiers'],
   ['/admin/distribution', 'Distribution'],
-  ['/admin/kpi', 'KPI']
+  ['/admin/kpi', 'KPI'],
+  ['/admin/logs', 'Logs']
 ];
 
 export default function AppShell({ admin = false }) {
   const navigate = useNavigate();
   const links = admin ? adminLinks : agentLinks;
+  const [profile, setProfile] = useState(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadProfile() {
+      const {
+        data: { session }
+      } = await supabase.auth.getSession();
+
+      if (!session) {
+        if (mounted) setProfile(null);
+        return;
+      }
+
+      const { data } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', session.user.id)
+        .single();
+
+      if (mounted) {
+        setProfile(data || null);
+      }
+    }
+
+    loadProfile();
+
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange(() => {
+      loadProfile();
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -36,6 +77,8 @@ export default function AppShell({ admin = false }) {
       navigate('/admin/overview');
     }
   }
+
+  const canSwitchToAdmin = Boolean(profile?.is_admin);
 
   return (
     <div className="shell">
@@ -58,14 +101,17 @@ export default function AppShell({ admin = false }) {
         </nav>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <button
-            className="btn btn-primary"
-            onClick={switchMode}
-          >
-            {admin ? 'Switch to Agent' : 'Switch to Admin'}
-          </button>
+          {admin ? (
+            <button className="btn btn-primary" onClick={switchMode} type="button">
+              Switch to Agent
+            </button>
+          ) : canSwitchToAdmin ? (
+            <button className="btn btn-primary" onClick={switchMode} type="button">
+              Switch to Admin
+            </button>
+          ) : null}
 
-          <button className="btn btn-ghost" onClick={signOut}>
+          <button className="btn btn-ghost" onClick={signOut} type="button">
             Sign Out
           </button>
         </div>
