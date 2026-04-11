@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import DataTable from '../../components/DataTable';
 import { writeAdminLog } from '../../lib/adminLog';
@@ -85,6 +85,24 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
   };
 }
 
+function matchesSearch(row, query) {
+  if (!query) return true;
+  const text = [
+    row.first_name,
+    row.last_name,
+    row.phone,
+    row.email,
+    row.lead_type,
+    row.status,
+    row.source_batch
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  return text.includes(query.toLowerCase());
+}
+
 export default function LeadsAdmin() {
   const [rows, setRows] = useState([]);
   const [file, setFile] = useState(null);
@@ -94,12 +112,18 @@ export default function LeadsAdmin() {
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState('');
 
+  const [search, setSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [assignedFilter, setAssignedFilter] = useState('all');
+  const [sortOrder, setSortOrder] = useState('newest');
+  const [pageSize, setPageSize] = useState('50');
+
   async function load() {
     const { data } = await supabase
       .from('leads')
       .select('*')
-      .order('created_at', { ascending: false })
-      .limit(200);
+      .order('created_at', { ascending: false });
 
     setRows(data || []);
   }
@@ -161,10 +185,7 @@ export default function LeadsAdmin() {
         mapLeadRow(row, leadType, leadCategory, batchRow.id, finalBatchName)
       );
 
-      const { error: leadsError } = await supabase
-        .from('leads')
-        .insert(leadRows);
-
+      const { error: leadsError } = await supabase.from('leads').insert(leadRows);
       if (leadsError) throw leadsError;
 
       await writeAdminLog({
@@ -193,13 +214,55 @@ export default function LeadsAdmin() {
     }
   }
 
+  const filteredRows = useMemo(() => {
+    const next = rows
+      .filter((row) => matchesSearch(row, search))
+      .filter((row) => (typeFilter === 'all' ? true : row.lead_type === typeFilter))
+      .filter((row) => (categoryFilter === 'all' ? true : row.lead_category === categoryFilter))
+      .filter((row) => {
+        if (assignedFilter === 'assigned') return Boolean(row.assigned_to);
+        if (assignedFilter === 'unassigned') return !row.assigned_to;
+        return true;
+      });
+
+    next.sort((a, b) => {
+      const aTime = new Date(a.created_at || 0).getTime();
+      const bTime = new Date(b.created_at || 0).getTime();
+      return sortOrder === 'oldest' ? aTime - bTime : bTime - aTime;
+    });
+
+    return next;
+  }, [rows, search, typeFilter, categoryFilter, assignedFilter, sortOrder]);
+
+  const visibleRows = useMemo(() => {
+    if (pageSize === 'all') return filteredRows;
+    return filteredRows.slice(0, Number(pageSize));
+  }, [filteredRows, pageSize]);
+
+  const totals = useMemo(() => {
+    return rows.reduce(
+      (acc, row) => {
+        acc.total += 1;
+        if (row.assigned_to) acc.assigned += 1;
+        else acc.unassigned += 1;
+        return acc;
+      },
+      { total: 0, assigned: 0, unassigned: 0 }
+    );
+  }, [rows]);
+
   const columns = [
     { key: 'first_name', label: 'First' },
     { key: 'last_name', label: 'Last' },
+    { key: 'phone', label: 'Phone' },
     { key: 'lead_type', label: 'Lead Type' },
     { key: 'lead_category', label: 'Category' },
     { key: 'status', label: 'Status' },
-    { key: 'assigned_to', label: 'Assigned To' },
+    {
+      key: 'assigned_to',
+      label: 'Assignment',
+      render: (v) => (v ? 'Assigned' : 'Unassigned')
+    },
     { key: 'source_batch', label: 'Batch' },
     { key: 'created_at', label: 'Created', render: (v) => formatDate(v) }
   ];
@@ -219,6 +282,24 @@ export default function LeadsAdmin() {
         <div>
           <h1>Leads</h1>
           <p>Upload lead inventory and review current lead records.</p>
+        </div>
+      </div>
+
+      <div
+        className="grid grid-3"
+        style={{ flexShrink: 0, marginBottom: 12 }}
+      >
+        <div className="glass" style={{ padding: 14 }}>
+          <strong>Total Leads</strong>
+          <div style={{ fontSize: 24, marginTop: 8 }}>{totals.total}</div>
+        </div>
+        <div className="glass" style={{ padding: 14 }}>
+          <strong>Assigned</strong>
+          <div style={{ fontSize: 24, marginTop: 8 }}>{totals.assigned}</div>
+        </div>
+        <div className="glass" style={{ padding: 14 }}>
+          <strong>Unassigned</strong>
+          <div style={{ fontSize: 24, marginTop: 8 }}>{totals.unassigned}</div>
         </div>
       </div>
 
@@ -269,6 +350,78 @@ export default function LeadsAdmin() {
         {message ? <div className="top-gap">{message}</div> : null}
       </form>
 
+      <div className="glass top-gap" style={{ padding: 12, flexShrink: 0 }}>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
+            gap: 10
+          }}
+        >
+          <label>
+            Search
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Name, phone, email, batch..."
+            />
+          </label>
+
+          <label>
+            Lead Type
+            <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+              <option value="all">All</option>
+              {leadTypes.map((type) => (
+                <option key={type} value={type}>
+                  {type}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            Fresh / Aged
+            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+              <option value="all">All</option>
+              <option value="fresh">Fresh</option>
+              <option value="aged">Aged</option>
+            </select>
+          </label>
+
+          <label>
+            Assignment
+            <select value={assignedFilter} onChange={(e) => setAssignedFilter(e.target.value)}>
+              <option value="all">All</option>
+              <option value="assigned">Assigned</option>
+              <option value="unassigned">Unassigned</option>
+            </select>
+          </label>
+
+          <label>
+            Sort
+            <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)}>
+              <option value="newest">Newest to Oldest</option>
+              <option value="oldest">Oldest to Newest</option>
+            </select>
+          </label>
+
+          <label>
+            Show
+            <select value={pageSize} onChange={(e) => setPageSize(e.target.value)}>
+              <option value="10">10</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="1000">1000</option>
+              <option value="all">Show All</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="top-gap" style={{ fontSize: 14, opacity: 0.85 }}>
+          Showing {visibleRows.length} of {filteredRows.length} matching leads
+        </div>
+      </div>
+
       <div
         className="top-gap"
         style={{
@@ -277,7 +430,7 @@ export default function LeadsAdmin() {
           overflow: 'auto'
         }}
       >
-        <DataTable columns={columns} rows={rows} />
+        <DataTable columns={columns} rows={visibleRows} />
       </div>
     </div>
   );
