@@ -67,7 +67,7 @@ export default function Landing() {
       provider: 'discord',
       options: {
         redirectTo,
-        scopes: 'identify guilds guilds.members.read'
+        scopes: 'identify guilds'
       }
     });
   }
