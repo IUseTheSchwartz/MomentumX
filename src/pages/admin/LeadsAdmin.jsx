@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import DataTable from '../../components/DataTable';
+import { writeAdminLog } from '../../lib/adminLog';
 
 const leadTypes = ['Veteran', 'Trucker IUL', 'Mortgage', 'General IUL'];
 
@@ -165,6 +166,18 @@ export default function LeadsAdmin() {
         .insert(leadRows);
 
       if (leadsError) throw leadsError;
+
+      await writeAdminLog({
+        action: 'Imported leads batch',
+        targetType: 'lead_batch',
+        targetId: batchRow.id,
+        details: {
+          batch_name: finalBatchName,
+          lead_type: leadType,
+          lead_category: leadCategory,
+          total_uploaded: parsedRows.length
+        }
+      });
 
       setFile(null);
       setBatchName('');
