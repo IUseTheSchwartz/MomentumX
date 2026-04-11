@@ -12,11 +12,95 @@ function getUtcDayName(date = new Date()) {
   }).toLowerCase();
 }
 
+function buildTypeTargets(total, leadTypes) {
+  const safeTypes = Array.isArray(leadTypes) ? leadTypes.filter(Boolean) : [];
+  if (!safeTypes.length || total <= 0) return [];
+
+  const base = Math.floor(total / safeTypes.length);
+  const remainder = total % safeTypes.length;
+
+  return safeTypes.map((leadType, index) => ({
+    leadType,
+    target: base + (index < remainder ? 1 : 0)
+  }));
+}
+
+async function fetchUnassignedLeadIds({ leadCategory, leadType, limit }) {
+  if (!leadType || limit <= 0) return [];
+
+  const { data, error } = await supabase
+    .from('leads')
+    .select('id')
+    .is('assigned_to', null)
+    .eq('lead_category', leadCategory)
+    .eq('lead_type', leadType)
+    .eq('status', 'New')
+    .limit(limit);
+
+  if (error) throw error;
+  return (data || []).map((row) => row.id);
+}
+
+async function assignLeadIdsToAgent({ leadIds, agentId }) {
+  if (!leadIds.length) return 0;
+
+  const { data, error } = await supabase
+    .from('leads')
+    .update({
+      assigned_to: agentId,
+      assigned_at: new Date().toISOString()
+    })
+    .in('id', leadIds)
+    .is('assigned_to', null)
+    .select('id');
+
+  if (error) throw error;
+  return (data || []).length;
+}
+
+async function assignForAgent({
+  agent,
+  leadCategory,
+  totalAmount,
+  assignedSummary
+}) {
+  const allowedLeadTypes = Array.isArray(agent.allowed_lead_types)
+    ? agent.allowed_lead_types.filter(Boolean)
+    : [];
+
+  if (!allowedLeadTypes.length || totalAmount <= 0) return 0;
+
+  const targets = buildTypeTargets(totalAmount, allowedLeadTypes);
+  let assignedForAgent = 0;
+
+  for (const item of targets) {
+    const ids = await fetchUnassignedLeadIds({
+      leadCategory,
+      leadType: item.leadType,
+      limit: item.target
+    });
+
+    const assignedCount = await assignLeadIdsToAgent({
+      leadIds: ids,
+      agentId: agent.id
+    });
+
+    assignedForAgent += assignedCount;
+  }
+
+  if (leadCategory === 'aged') {
+    assignedSummary.assignedAged += assignedForAgent;
+  } else if (leadCategory === 'fresh') {
+    assignedSummary.assignedFresh += assignedForAgent;
+  }
+
+  return assignedForAgent;
+}
+
 async function assignLeadsForBucket({
   tierId,
   leadCategory,
   amount,
-  agentDayName,
   profiles,
   assignedSummary
 }) {
@@ -34,48 +118,14 @@ async function assignLeadsForBucket({
   let totalAssigned = 0;
 
   for (const agent of eligibleAgents) {
-    const allowedLeadTypes = Array.isArray(agent.allowed_lead_types)
-      ? agent.allowed_lead_types
-      : [];
+    const assignedCount = await assignForAgent({
+      agent,
+      leadCategory,
+      totalAmount: amount,
+      assignedSummary
+    });
 
-    if (!allowedLeadTypes.length) continue;
-
-    const { data: leads, error: leadsError } = await supabase
-      .from('leads')
-      .select('id, lead_type')
-      .is('assigned_to', null)
-      .eq('lead_category', leadCategory)
-      .eq('status', 'New')
-      .in('lead_type', allowedLeadTypes)
-      .limit(amount);
-
-    if (leadsError) {
-      throw leadsError;
-    }
-
-    if (!leads || !leads.length) continue;
-
-    const leadIds = leads.map((lead) => lead.id);
-
-    const { error: updateError } = await supabase
-      .from('leads')
-      .update({
-        assigned_to: agent.id,
-        assigned_at: new Date().toISOString()
-      })
-      .in('id', leadIds);
-
-    if (updateError) {
-      throw updateError;
-    }
-
-    totalAssigned += leadIds.length;
-  }
-
-  if (leadCategory === 'aged') {
-    assignedSummary.assignedAged += totalAssigned;
-  } else if (leadCategory === 'fresh') {
-    assignedSummary.assignedFresh += totalAssigned;
+    totalAssigned += assignedCount;
   }
 
   return totalAssigned;
@@ -106,17 +156,13 @@ exports.handler = async function (event) {
 
     const { data: rules, error: rulesError } = await rulesQuery;
 
-    if (rulesError) {
-      throw rulesError;
-    }
+    if (rulesError) throw rulesError;
 
     const { data: profiles, error: profilesError } = await supabase
       .from('profiles')
       .select('id, tier_id, leads_paused, lead_access_banned, allowed_lead_types');
 
-    if (profilesError) {
-      throw profilesError;
-    }
+    if (profilesError) throw profilesError;
 
     const summary = {
       processedRules: 0,
@@ -146,7 +192,6 @@ exports.handler = async function (event) {
           tierId: rule.tier_id,
           leadCategory: 'aged',
           amount: Number(rule.aged_amount || 0),
-          agentDayName: today,
           profiles,
           assignedSummary: summary
         });
@@ -157,7 +202,6 @@ exports.handler = async function (event) {
           tierId: rule.tier_id,
           leadCategory: 'fresh',
           amount: Number(rule.fresh_amount || 0),
-          agentDayName: today,
           profiles,
           assignedSummary: summary
         });
