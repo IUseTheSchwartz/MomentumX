@@ -2,6 +2,10 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import DataTable from '../../components/DataTable';
 
+function isManualTier(row) {
+  return row.slug === 'tier-2' || row.slug === 'tier-3' || row.duration_days === null;
+}
+
 export default function Tiers() {
   const [rows, setRows] = useState([]);
 
@@ -27,26 +31,52 @@ export default function Tiers() {
     { key: 'name', label: 'Tier' },
 
     {
+      key: 'duration_mode',
+      label: 'Duration Type',
+      render: (_value, row) => {
+        const manual = isManualTier(row);
+
+        return (
+          <select
+            value={manual ? 'manual' : 'timed'}
+            onChange={(e) => {
+              const next = e.target.value;
+
+              if (next === 'manual') {
+                updateTier(row.id, { duration_days: null });
+              } else {
+                updateTier(row.id, { duration_days: 30 });
+              }
+            }}
+          >
+            <option value="timed">Timed</option>
+            <option value="manual">No Duration / Manual</option>
+          </select>
+        );
+      }
+    },
+
+    {
       key: 'duration_days',
       label: 'Duration',
       render: (value, row) => {
-        const isManual =
-          row.slug === 'tier-2' || row.slug === 'tier-3';
+        const manual = isManualTier(row);
 
-        if (isManual) {
-          return <span>Manual / Infinite</span>;
+        if (manual) {
+          return <span>None</span>;
         }
 
         return (
           <input
             type="number"
-            value={value || 0}
+            min="1"
+            value={value || 30}
             onChange={(e) =>
               updateTier(row.id, {
-                duration_days: Number(e.target.value)
+                duration_days: Number(e.target.value || 30)
               })
             }
-            style={{ width: 80 }}
+            style={{ width: 90 }}
           />
         );
       }
