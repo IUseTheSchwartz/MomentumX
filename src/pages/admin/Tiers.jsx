@@ -7,8 +7,19 @@ function isManualTier(row) {
   return row.duration_days === null;
 }
 
+function tierHelpText(row) {
+  const manual = isManualTier(row);
+
+  if (!manual) {
+    return `Auto-removes agent from this tier after ${row.duration_days || 30} days unless admin changes them first.`;
+  }
+
+  return 'No automatic expiration. Admin must manually upgrade, downgrade, or remove.';
+}
+
 export default function Tiers() {
   const [rows, setRows] = useState([]);
+  const [message, setMessage] = useState('');
 
   async function load() {
     const { data } = await supabase
@@ -24,9 +35,15 @@ export default function Tiers() {
   }, []);
 
   async function updateTier(id, patch, actionLabel = 'Updated tier') {
+    setMessage('');
     const before = rows.find((row) => row.id === id) || null;
 
-    await supabase.from('tiers').update(patch).eq('id', id);
+    const { error } = await supabase.from('tiers').update(patch).eq('id', id);
+
+    if (error) {
+      setMessage(error.message || 'Could not update tier.');
+      return;
+    }
 
     await writeAdminLog({
       action: actionLabel,
@@ -38,6 +55,7 @@ export default function Tiers() {
       }
     });
 
+    setMessage('Tier updated.');
     load();
   }
 
@@ -56,14 +74,14 @@ export default function Tiers() {
               const next = e.target.value;
 
               if (next === 'manual') {
-                updateTier(row.id, { duration_days: null }, 'Set tier to no duration');
+                updateTier(row.id, { duration_days: null }, 'Set tier to manual no-expiry');
               } else {
                 updateTier(row.id, { duration_days: 30 }, 'Set tier to timed duration');
               }
             }}
           >
             <option value="timed">Timed</option>
-            <option value="manual">No Duration / Manual</option>
+            <option value="manual">Manual / No Auto Expiry</option>
           </select>
         );
       }
@@ -110,19 +128,54 @@ export default function Tiers() {
         </button>
       )
     },
-    { key: 'description', label: 'Description' }
+    {
+      key: 'description',
+      label: 'Description',
+      render: (value, row) => (
+        <div>
+          <div>{value || '—'}</div>
+          <div style={{ opacity: 0.7, fontSize: 12, marginTop: 6 }}>
+            {tierHelpText(row)}
+          </div>
+        </div>
+      )
+    }
   ];
 
   return (
-    <div className="page">
-      <div className="page-header">
+    <div
+      className="page"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        minHeight: 0,
+        overflow: 'hidden'
+      }}
+    >
+      <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
           <h1>Tiers</h1>
-          <p>Edit tier duration and structure.</p>
+          <p>Edit tier duration and structure. Timed tiers auto-expire. Manual tiers do not.</p>
         </div>
       </div>
 
-      <DataTable columns={columns} rows={rows} />
+      {message ? (
+        <div className="glass" style={{ padding: 12, flexShrink: 0 }}>
+          {message}
+        </div>
+      ) : null}
+
+      <div
+        className="top-gap"
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflow: 'auto'
+        }}
+      >
+        <DataTable columns={columns} rows={rows} />
+      </div>
     </div>
   );
 }
