@@ -1,88 +1,90 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import DataTable from '../../components/DataTable';
 import { formatDate } from '../../lib/utils';
 
-const blank = {
-  lead_id: '',
-  recording_url: '',
-  file_name: ''
-};
-
 export default function Recordings() {
   const [rows, setRows] = useState([]);
-  const [leads, setLeads] = useState([]);
-  const [form, setForm] = useState(blank);
+  const [view, setView] = useState('daily');
 
-  async function load() {
-    const {
-      data: { session }
-    } = await supabase.auth.getSession();
+  useEffect(() => {
+    async function load() {
+      const {
+        data: { session }
+      } = await supabase.auth.getSession();
 
-    if (!session) return;
+      if (!session) return;
 
-    const [{ data: recs }, { data: leadRows }] = await Promise.all([
-      supabase
+      const { data } = await supabase
         .from('lead_recordings')
         .select('*, leads(first_name,last_name)')
         .eq('agent_id', session.user.id)
-        .order('created_at', { ascending: false }),
-      supabase
-        .from('leads')
-        .select('id, first_name, last_name')
-        .eq('assigned_to', session.user.id)
-        .order('created_at', { ascending: false })
-        .limit(200)
-    ]);
+        .order('created_at', { ascending: false });
 
-    setRows(recs || []);
-    setLeads(leadRows || []);
-  }
+      setRows(data || []);
+    }
 
-  useEffect(() => {
     load();
   }, []);
 
-  async function submit(e) {
-    e.preventDefault();
+  const grouped = useMemo(() => {
+    return rows.map((row) => {
+      const d = new Date(row.created_at);
+      let groupLabel = row.created_at;
 
-    const {
-      data: { session }
-    } = await supabase.auth.getSession();
+      if (view === 'weekly') {
+        const copy = new Date(d);
+        const day = copy.getDay();
+        const diff = copy.getDate() - day + (day === 0 ? -6 : 1);
+        copy.setDate(diff);
+        groupLabel = copy.toISOString().slice(0, 10);
+      }
 
-    if (!session) return;
+      if (view === 'monthly') {
+        groupLabel = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+      }
 
-    await supabase.from('lead_recordings').insert({
-      agent_id: session.user.id,
-      lead_id: form.lead_id || null,
-      recording_url: form.recording_url,
-      file_name: form.file_name || 'Recording'
+      return {
+        ...row,
+        group_label: groupLabel
+      };
     });
-
-    setForm(blank);
-    load();
-  }
+  }, [rows, view]);
 
   const columns = [
     {
+      key: 'group_label',
+      label: view === 'daily' ? 'Day' : view === 'weekly' ? 'Week' : 'Month',
+      render: (v) => formatDate(v)
+    },
+    {
       key: 'leads',
       label: 'Lead',
-      render: (_value, row) =>
+      render: (_v, row) =>
         row.leads
           ? `${row.leads.first_name || ''} ${row.leads.last_name || ''}`.trim()
           : 'No lead attached'
     },
-    { key: 'file_name', label: 'Name' },
+    { key: 'file_name', label: 'Recording' },
     {
       key: 'recording_url',
-      label: 'Recording',
+      label: 'Audio',
       render: (v) => (
-        <a href={v} target="_blank" rel="noreferrer">
-          Open
-        </a>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <a href={v} target="_blank" rel="noreferrer">
+            Open
+          </a>
+          <a href={v} download>
+            Download
+          </a>
+        </div>
       )
     },
-    { key: 'created_at', label: 'Created', render: (v) => formatDate(v) }
+    {
+      key: 'created_at',
+      label: 'Created',
+      render: (v) => formatDate(v)
+    }
   ];
 
   return (
@@ -90,47 +92,23 @@ export default function Recordings() {
       <div className="page-header">
         <div>
           <h1>Recordings</h1>
-          <p>Attach recordings to leads and review your history.</p>
+          <p>Stored sit recordings by day, week, and month.</p>
+        </div>
+
+        <div className="segmented">
+          <button className={view === 'daily' ? 'seg-btn active' : 'seg-btn'} onClick={() => setView('daily')}>
+            Daily
+          </button>
+          <button className={view === 'weekly' ? 'seg-btn active' : 'seg-btn'} onClick={() => setView('weekly')}>
+            Weekly
+          </button>
+          <button className={view === 'monthly' ? 'seg-btn active' : 'seg-btn'} onClick={() => setView('monthly')}>
+            Monthly
+          </button>
         </div>
       </div>
 
-      <form className="form glass" onSubmit={submit}>
-        <div className="form-grid">
-          <label>
-            Lead
-            <select value={form.lead_id} onChange={(e) => setForm((s) => ({ ...s, lead_id: e.target.value }))}>
-              <option value="">No lead attached</option>
-              {leads.map((lead) => (
-                <option key={lead.id} value={lead.id}>
-                  {lead.first_name} {lead.last_name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            Recording Name
-            <input value={form.file_name} onChange={(e) => setForm((s) => ({ ...s, file_name: e.target.value }))} />
-          </label>
-
-          <label>
-            Recording URL
-            <input
-              value={form.recording_url}
-              onChange={(e) => setForm((s) => ({ ...s, recording_url: e.target.value }))}
-              placeholder="https://..."
-            />
-          </label>
-        </div>
-
-        <button className="btn btn-primary" type="submit">
-          Save Recording
-        </button>
-      </form>
-
-      <div className="top-gap">
-        <DataTable columns={columns} rows={rows} />
-      </div>
+      <DataTable columns={columns} rows={grouped} />
     </div>
   );
 }
