@@ -4,18 +4,33 @@ import { supabase } from '../lib/supabaseClient';
 
 export default function AuthCallback() {
   const navigate = useNavigate();
-  const [message] = useState('Verifying access...');
+  const [message, setMessage] = useState('Verifying access...');
 
   useEffect(() => {
     let active = true;
 
+    async function getSessionWithRetry() {
+      for (let i = 0; i < 10; i += 1) {
+        const {
+          data: { session }
+        } = await supabase.auth.getSession();
+
+        if (session) return session;
+
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+
+      return null;
+    }
+
     async function run() {
-      const {
-        data: { session }
-      } = await supabase.auth.getSession();
+      const session = await getSessionWithRetry();
 
       if (!session) {
-        navigate('/');
+        if (active) {
+          setMessage('No session found. Sending you back...');
+          setTimeout(() => navigate('/', { replace: true }), 800);
+        }
         return;
       }
 
@@ -23,7 +38,7 @@ export default function AuthCallback() {
 
       if (!providerToken) {
         await supabase.auth.signOut();
-        navigate('/denied');
+        navigate('/denied', { replace: true });
         return;
       }
 
@@ -54,21 +69,21 @@ export default function AuthCallback() {
 
       if (!response.ok || !data.ok) {
         await supabase.auth.signOut();
-        navigate('/denied');
+        navigate('/denied', { replace: true });
         return;
       }
 
       if (data.banned) {
-        navigate('/ineligible');
+        navigate('/ineligible', { replace: true });
         return;
       }
 
       if (data.isAdmin) {
-        navigate('/admin/overview');
+        navigate('/admin/overview', { replace: true });
         return;
       }
 
-      navigate('/app/dashboard');
+      navigate('/app/dashboard', { replace: true });
     }
 
     run();
