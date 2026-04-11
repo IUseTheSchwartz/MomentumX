@@ -8,13 +8,19 @@ export default function Landing() {
   const [showX, setShowX] = useState(false);
 
   useEffect(() => {
+    let mounted = true;
+
     const hash = window.location.hash || '';
-    if (hash.includes('access_token=')) {
+    const search = window.location.search || '';
+
+    if (
+      hash.includes('access_token=') ||
+      hash.includes('refresh_token=') ||
+      search.includes('code=')
+    ) {
       navigate('/auth/callback', { replace: true });
       return;
     }
-
-    let mounted = true;
 
     async function bootstrap() {
       const {
@@ -30,14 +36,21 @@ export default function Landing() {
 
     const {
       data: { subscription }
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (mounted && session) {
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+
+      if (
+        session &&
+        (event === 'SIGNED_IN' ||
+          event === 'TOKEN_REFRESHED' ||
+          event === 'INITIAL_SESSION')
+      ) {
         navigate('/auth/callback', { replace: true });
       }
     });
 
     const timer = setTimeout(() => {
-      setShowX(true);
+      if (mounted) setShowX(true);
     }, 500);
 
     return () => {
@@ -54,7 +67,7 @@ export default function Landing() {
       provider: 'discord',
       options: {
         redirectTo,
-        scopes: 'identify guilds'
+        scopes: 'identify guilds guilds.members.read'
       }
     });
   }
