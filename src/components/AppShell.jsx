@@ -6,8 +6,8 @@ const agentLinks = [
   ['/app/leads', 'Leads'],
   ['/app/kpi', 'KPI'],
   ['/app/requirements', 'Requirements'],
-  ['/app/content', 'Content'],
   ['/app/recordings', 'Recordings'],
+  ['/app/book', 'Book of Business'],
   ['/app/support', 'Support']
 ];
 
