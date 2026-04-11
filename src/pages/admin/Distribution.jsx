@@ -1,16 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import DataTable from '../../components/DataTable';
 
 const blank = {
   tier_id: '',
-  amount: '',
-  frequency: 'monthly',
-  day_of_week: 'monday',
-  day_of_month: '1'
+  aged_amount: '',
+  aged_day_of_week: 'monday',
+  fresh_amount: '',
+  fresh_day_of_week: 'monday'
 };
 
-const weekDays = [
+const days = [
   'monday',
   'tuesday',
   'wednesday',
@@ -27,18 +27,15 @@ export default function Distribution() {
   const [message, setMessage] = useState('');
 
   async function load() {
-    const [{ data: ruleRows }, { data: tierRows }] = await Promise.all([
+    const [{ data: rules }, { data: tierRows }] = await Promise.all([
       supabase
         .from('distribution_rules')
-        .select('*, tiers(name, manual_only)')
+        .select('*, tiers(name)')
         .order('created_at', { ascending: false }),
-      supabase
-        .from('tiers')
-        .select('id, name, manual_only')
-        .order('sort_order')
+      supabase.from('tiers').select('id, name').order('sort_order')
     ]);
 
-    setRows(ruleRows || []);
+    setRows(rules || []);
     setTiers(tierRows || []);
   }
 
@@ -46,44 +43,47 @@ export default function Distribution() {
     load();
   }, []);
 
-  const eligibleTiers = useMemo(
-    () => tiers.filter((tier) => !tier.manual_only),
-    [tiers]
-  );
-
   async function submit(e) {
     e.preventDefault();
     setMessage('');
 
-    const amount = Number(form.amount || 0);
     if (!form.tier_id) {
       setMessage('Select a tier.');
       return;
     }
 
-    if (amount <= 0) {
-      setMessage('Enter a valid lead amount.');
-      return;
-    }
-
     const payload = {
       tier_id: form.tier_id,
-      amount,
-      frequency: form.frequency,
-      day_of_week: form.frequency === 'weekly' ? form.day_of_week : null,
-      day_of_month: form.frequency === 'monthly' ? Number(form.day_of_month) : null
+      aged_amount: Number(form.aged_amount || 0),
+      aged_day_of_week: form.aged_day_of_week,
+      fresh_amount: Number(form.fresh_amount || 0),
+      fresh_day_of_week: form.fresh_day_of_week
     };
 
-    const { error } = await supabase.from('distribution_rules').insert(payload);
+    const { error } = await supabase
+      .from('distribution_rules')
+      .insert(payload);
 
     if (error) {
-      setMessage(error.message || 'Could not save rule.');
+      setMessage(error.message);
       return;
     }
 
     setForm(blank);
-    setMessage('Distribution rule added.');
+    setMessage('Rule saved.');
     load();
+  }
+
+  async function deleteRule(id) {
+    await supabase.from('distribution_rules').delete().eq('id', id);
+    load();
+  }
+
+  async function forceDistribution(row) {
+    // UI ONLY for now — backend function comes next
+    alert(
+      `Force distribution triggered for ${row.tiers?.name}. This will NOT cancel the next scheduled run.`
+    );
   }
 
   const columns = [
@@ -92,17 +92,31 @@ export default function Distribution() {
       label: 'Tier',
       render: (_v, row) => row.tiers?.name || '—'
     },
-    { key: 'amount', label: 'Lead Amount' },
-    { key: 'frequency', label: 'Frequency' },
+    { key: 'aged_amount', label: 'Aged Amount' },
+    { key: 'aged_day_of_week', label: 'Aged Day' },
+    { key: 'fresh_amount', label: 'Fresh Amount' },
+    { key: 'fresh_day_of_week', label: 'Fresh Day' },
+
     {
-      key: 'day_of_week',
-      label: 'Day of Week',
-      render: (value, row) => (row.frequency === 'weekly' ? value || '—' : '—')
-    },
-    {
-      key: 'day_of_month',
-      label: 'Day of Month',
-      render: (value, row) => (row.frequency === 'monthly' ? value || '—' : '—')
+      key: 'actions',
+      label: 'Actions',
+      render: (_v, row) => (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            className="btn btn-danger btn-small"
+            onClick={() => deleteRule(row.id)}
+          >
+            Delete
+          </button>
+
+          <button
+            className="btn btn-primary btn-small"
+            onClick={() => forceDistribution(row)}
+          >
+            Force Run
+          </button>
+        </div>
+      )
     }
   ];
 
@@ -111,7 +125,7 @@ export default function Distribution() {
       <div className="page-header">
         <div>
           <h1>Distribution</h1>
-          <p>Set how Tier 1-style tiers receive weekly or monthly lead drops.</p>
+          <p>Set weekly aged and fresh lead drops per tier.</p>
         </div>
       </div>
 
@@ -121,78 +135,75 @@ export default function Distribution() {
             Tier
             <select
               value={form.tier_id}
-              onChange={(e) => setForm((s) => ({ ...s, tier_id: e.target.value }))}
+              onChange={(e) =>
+                setForm((s) => ({ ...s, tier_id: e.target.value }))
+              }
             >
               <option value="">Select Tier</option>
-              {eligibleTiers.map((tier) => (
-                <option key={tier.id} value={tier.id}>
-                  {tier.name}
+              {tiers.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
                 </option>
               ))}
             </select>
           </label>
 
           <label>
-            Frequency
-            <select
-              value={form.frequency}
+            Aged Leads / Week
+            <input
+              type="number"
+              value={form.aged_amount}
               onChange={(e) =>
-                setForm((s) => ({
-                  ...s,
-                  frequency: e.target.value
-                }))
+                setForm((s) => ({ ...s, aged_amount: e.target.value }))
+              }
+            />
+          </label>
+
+          <label>
+            Aged Day
+            <select
+              value={form.aged_day_of_week}
+              onChange={(e) =>
+                setForm((s) => ({ ...s, aged_day_of_week: e.target.value }))
               }
             >
-              <option value="weekly">Weekly</option>
-              <option value="monthly">Monthly</option>
+              {days.map((d) => (
+                <option key={d}>{d}</option>
+              ))}
             </select>
           </label>
 
           <label>
-            Leads Per {form.frequency === 'weekly' ? 'Week' : 'Month'}
+            Fresh Leads / Week
             <input
               type="number"
-              min="1"
-              value={form.amount}
-              onChange={(e) => setForm((s) => ({ ...s, amount: e.target.value }))}
-              placeholder="25"
+              value={form.fresh_amount}
+              onChange={(e) =>
+                setForm((s) => ({ ...s, fresh_amount: e.target.value }))
+              }
             />
           </label>
 
-          {form.frequency === 'weekly' ? (
-            <label>
-              Day of Week
-              <select
-                value={form.day_of_week}
-                onChange={(e) => setForm((s) => ({ ...s, day_of_week: e.target.value }))}
-              >
-                {weekDays.map((day) => (
-                  <option key={day} value={day}>
-                    {day.charAt(0).toUpperCase() + day.slice(1)}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : (
-            <label>
-              Day of Month
-              <input
-                type="number"
-                min="1"
-                max="31"
-                value={form.day_of_month}
-                onChange={(e) => setForm((s) => ({ ...s, day_of_month: e.target.value }))}
-                placeholder="1"
-              />
-            </label>
-          )}
+          <label>
+            Fresh Day
+            <select
+              value={form.fresh_day_of_week}
+              onChange={(e) =>
+                setForm((s) => ({ ...s, fresh_day_of_week: e.target.value }))
+              }
+            >
+              {days.map((d) => (
+                <option key={d}>{d}</option>
+              ))}
+            </select>
+          </label>
         </div>
 
         <button className="btn btn-primary" type="submit">
-          Add Rule
+          Save Rule
         </button>
 
-        {message ? <div className="top-gap">{message}</div> : null}
+        {message && <div className="top-gap">{message}</div>}
       </form>
 
       <div className="top-gap">
