@@ -38,3 +38,6 @@
 
 [functions."distribution-run"]
   schedule = "@daily"
+
+[functions."tier-expire"]
+  schedule = "@daily"
