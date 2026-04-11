@@ -5,10 +5,10 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-function getUtcDayName(date = new Date()) {
+function getBusinessDayName(date = new Date()) {
   return date.toLocaleDateString('en-US', {
     weekday: 'long',
-    timeZone: 'UTC'
+    timeZone: 'America/Chicago'
   }).toLowerCase();
 }
 
@@ -88,10 +88,20 @@ async function assignForAgent({
     assignedForAgent += assignedCount;
   }
 
+  if (!assignedSummary.byAgent[agent.id]) {
+    assignedSummary.byAgent[agent.id] = {
+      agentId: agent.id,
+      assignedAged: 0,
+      assignedFresh: 0
+    };
+  }
+
   if (leadCategory === 'aged') {
     assignedSummary.assignedAged += assignedForAgent;
+    assignedSummary.byAgent[agent.id].assignedAged += assignedForAgent;
   } else if (leadCategory === 'fresh') {
     assignedSummary.assignedFresh += assignedForAgent;
+    assignedSummary.byAgent[agent.id].assignedFresh += assignedForAgent;
   }
 
   return assignedForAgent;
@@ -142,7 +152,7 @@ exports.handler = async function (event) {
 
     const force = Boolean(body.force);
     const ruleId = body.ruleId || null;
-    const today = getUtcDayName();
+    const today = getBusinessDayName();
 
     let rulesQuery = supabase
       .from('distribution_rules')
@@ -155,7 +165,6 @@ exports.handler = async function (event) {
     }
 
     const { data: rules, error: rulesError } = await rulesQuery;
-
     if (rulesError) throw rulesError;
 
     const { data: profiles, error: profilesError } = await supabase
@@ -167,7 +176,9 @@ exports.handler = async function (event) {
     const summary = {
       processedRules: 0,
       assignedAged: 0,
-      assignedFresh: 0
+      assignedFresh: 0,
+      businessDay: today,
+      byAgent: {}
     };
 
     for (const rule of rules || []) {
