@@ -12,7 +12,7 @@ export default function Agents() {
     const [{ data: profiles }, { data: tierRows }] = await Promise.all([
       supabase
         .from('profiles')
-        .select('*, tiers(name)')
+        .select('*, tiers(name, manual_only)')
         .order('created_at', { ascending: false }),
       supabase.from('tiers').select('id, name').order('sort_order')
     ]);
@@ -48,7 +48,7 @@ export default function Agents() {
     },
     {
       key: 'allowed_lead_types',
-      label: 'Lead Types',
+      label: 'Allowed Lead Types',
       render: (_value, row) => (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {leadTypes.map((type) => {
@@ -73,26 +73,26 @@ export default function Agents() {
     {
       key: 'leads_paused',
       label: 'Paused',
-      render: (v, row) => (
+      render: (value, row) => (
         <button
           className="btn btn-ghost btn-small"
-          onClick={() => updateProfile(row.id, { leads_paused: !v })}
+          onClick={() => updateProfile(row.id, { leads_paused: !value })}
           type="button"
         >
-          {v ? 'Yes' : 'No'}
+          {value ? 'Yes' : 'No'}
         </button>
       )
     },
     {
       key: 'lead_access_banned',
       label: 'Ineligible',
-      render: (v, row) => (
+      render: (value, row) => (
         <button
           className="btn btn-danger btn-small"
-          onClick={() => updateProfile(row.id, { lead_access_banned: !v })}
+          onClick={() => updateProfile(row.id, { lead_access_banned: !value })}
           type="button"
         >
-          {v ? 'Yes' : 'No'}
+          {value ? 'Yes' : 'No'}
         </button>
       )
     },
@@ -101,7 +101,7 @@ export default function Agents() {
       label: 'Change Tier',
       render: (_value, row) => (
         <select
-          defaultValue={row.tier_id || ''}
+          value={row.tier_id || ''}
           onChange={(e) => updateProfile(row.id, { tier_id: e.target.value || null })}
         >
           <option value="">No Tier</option>
@@ -120,7 +120,7 @@ export default function Agents() {
       <div className="page-header">
         <div>
           <h1>Agents</h1>
-          <p>Pause leads, mark ineligible, edit tiers, and choose allowed lead types.</p>
+          <p>Manage eligibility, lead-type access, and manual tier placement.</p>
         </div>
       </div>
 
