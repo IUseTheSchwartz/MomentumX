@@ -12,19 +12,6 @@ function getBusinessDayName(date = new Date()) {
   }).toLowerCase();
 }
 
-function buildTypeTargets(total, leadTypes) {
-  const safeTypes = Array.isArray(leadTypes) ? leadTypes.filter(Boolean) : [];
-  if (!safeTypes.length || total <= 0) return [];
-
-  const base = Math.floor(total / safeTypes.length);
-  const remainder = total % safeTypes.length;
-
-  return safeTypes.map((leadType, index) => ({
-    leadType,
-    target: base + (index < remainder ? 1 : 0)
-  }));
-}
-
 async function fetchUnassignedLeadIds({ leadCategory, leadType, limit }) {
   if (!leadType || limit <= 0) return [];
 
@@ -58,6 +45,40 @@ async function assignLeadIdsToAgent({ leadIds, agentId }) {
   return (data || []).length;
 }
 
+async function fetchAvailableCountsByType({ leadCategory, leadTypes }) {
+  const safeTypes = Array.isArray(leadTypes) ? leadTypes.filter(Boolean) : [];
+  const counts = {};
+
+  if (!safeTypes.length) return counts;
+
+  await Promise.all(
+    safeTypes.map(async (leadType) => {
+      const { count, error } = await supabase
+        .from('leads')
+        .select('id', { count: 'exact', head: true })
+        .is('assigned_to', null)
+        .eq('lead_category', leadCategory)
+        .eq('lead_type', leadType)
+        .eq('status', 'New');
+
+      if (error) throw error;
+      counts[leadType] = Number(count || 0);
+    })
+  );
+
+  return counts;
+}
+
+function buildPreferredTypeOrder({ leadTypes, availableCounts }) {
+  return [...leadTypes].sort((a, b) => {
+    const aCount = Number(availableCounts[a] || 0);
+    const bCount = Number(availableCounts[b] || 0);
+
+    if (bCount !== aCount) return bCount - aCount;
+    return a.localeCompare(b);
+  });
+}
+
 async function assignForAgent({
   agent,
   leadCategory,
@@ -70,14 +91,32 @@ async function assignForAgent({
 
   if (!allowedLeadTypes.length || totalAmount <= 0) return 0;
 
-  const targets = buildTypeTargets(totalAmount, allowedLeadTypes);
-  let assignedForAgent = 0;
+  const availableCounts = await fetchAvailableCountsByType({
+    leadCategory,
+    leadTypes: allowedLeadTypes
+  });
 
-  for (const item of targets) {
+  const orderedTypes = buildPreferredTypeOrder({
+    leadTypes: allowedLeadTypes,
+    availableCounts
+  });
+
+  let remainingNeeded = Number(totalAmount || 0);
+  let assignedForAgent = 0;
+  const assignedByType = {};
+
+  for (const leadType of orderedTypes) {
+    if (remainingNeeded <= 0) break;
+
+    const available = Number(availableCounts[leadType] || 0);
+    if (available <= 0) continue;
+
+    const requested = Math.min(remainingNeeded, available);
+
     const ids = await fetchUnassignedLeadIds({
       leadCategory,
-      leadType: item.leadType,
-      limit: item.target
+      leadType,
+      limit: requested
     });
 
     const assignedCount = await assignLeadIdsToAgent({
@@ -85,23 +124,45 @@ async function assignForAgent({
       agentId: agent.id
     });
 
-    assignedForAgent += assignedCount;
+    if (assignedCount > 0) {
+      assignedForAgent += assignedCount;
+      remainingNeeded -= assignedCount;
+      assignedByType[leadType] = (assignedByType[leadType] || 0) + assignedCount;
+      availableCounts[leadType] = Math.max(
+        0,
+        Number(availableCounts[leadType] || 0) - assignedCount
+      );
+    }
   }
 
   if (!assignedSummary.byAgent[agent.id]) {
     assignedSummary.byAgent[agent.id] = {
       agentId: agent.id,
       assignedAged: 0,
-      assignedFresh: 0
+      assignedFresh: 0,
+      assignedAgedByType: {},
+      assignedFreshByType: {}
     };
   }
 
   if (leadCategory === 'aged') {
     assignedSummary.assignedAged += assignedForAgent;
     assignedSummary.byAgent[agent.id].assignedAged += assignedForAgent;
+
+    for (const [leadType, count] of Object.entries(assignedByType)) {
+      assignedSummary.byAgent[agent.id].assignedAgedByType[leadType] =
+        Number(assignedSummary.byAgent[agent.id].assignedAgedByType[leadType] || 0) +
+        count;
+    }
   } else if (leadCategory === 'fresh') {
     assignedSummary.assignedFresh += assignedForAgent;
     assignedSummary.byAgent[agent.id].assignedFresh += assignedForAgent;
+
+    for (const [leadType, count] of Object.entries(assignedByType)) {
+      assignedSummary.byAgent[agent.id].assignedFreshByType[leadType] =
+        Number(assignedSummary.byAgent[agent.id].assignedFreshByType[leadType] || 0) +
+        count;
+    }
   }
 
   return assignedForAgent;
@@ -114,7 +175,8 @@ async function assignLeadsForBucket({
   profiles,
   assignedSummary
 }) {
-  if (!amount || amount <= 0) return 0;
+  const targetAmount = Number(amount || 0);
+  if (targetAmount <= 0) return 0;
 
   const eligibleAgents = profiles.filter((profile) => {
     if (profile.leads_paused) return false;
@@ -131,7 +193,7 @@ async function assignLeadsForBucket({
     const assignedCount = await assignForAgent({
       agent,
       leadCategory,
-      totalAmount: amount,
+      totalAmount: targetAmount,
       assignedSummary
     });
 
