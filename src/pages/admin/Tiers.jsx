@@ -20,8 +20,24 @@ export default function Tiers() {
 
   const columns = [
     { key: 'name', label: 'Tier' },
-    { key: 'duration_days', label: 'Duration' },
-    { key: 'kpi_required', label: 'KPI Required' },
+    {
+      key: 'duration_days',
+      label: 'Duration',
+      render: (value, row) => {
+        if (row.manual_only) return 'Manual only';
+        return value ? `${value} days` : '—';
+      }
+    },
+    {
+      key: 'manual_only',
+      label: 'Placement',
+      render: (value) => (value ? 'Admin only' : 'Automatic / duration-based')
+    },
+    {
+      key: 'kpi_required',
+      label: 'KPI Required',
+      render: (value) => (value ? 'Yes' : 'No')
+    },
     { key: 'description', label: 'Description' }
   ];
 
@@ -30,7 +46,7 @@ export default function Tiers() {
       <div className="page-header">
         <div>
           <h1>Tiers</h1>
-          <p>Tier rules and requirement structure.</p>
+          <p>Tier structure and placement rules.</p>
         </div>
       </div>
 
