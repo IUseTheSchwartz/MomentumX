@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 
@@ -8,12 +8,13 @@ export default function AdminRoute({ children }) {
   const [session, setSession] = useState(undefined);
   const [profile, setProfile] = useState(null);
   const [profileResolved, setProfileResolved] = useState(false);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
-    let mounted = true;
+    mountedRef.current = true;
 
     async function loadProfile(nextSession) {
-      if (!mounted) return;
+      if (!mountedRef.current) return;
 
       if (!nextSession) {
         setProfile(null);
@@ -37,7 +38,7 @@ export default function AdminRoute({ children }) {
 
       const result = await Promise.race([profileRequest, timeout]);
 
-      if (!mounted) return;
+      if (!mountedRef.current) return;
 
       if (result?.timedOut) {
         setProfile(null);
@@ -48,43 +49,53 @@ export default function AdminRoute({ children }) {
 
       const { data, error } = result;
 
-      if (error) {
-        setProfile(null);
-      } else {
-        setProfile(data || null);
-      }
-
+      setProfile(error ? null : (data || null));
       setProfileLoading(false);
       setProfileResolved(true);
     }
 
-    async function init() {
+    async function refreshAuthState() {
       const {
-        data: { session: initialSession }
+        data: { session: nextSession }
       } = await supabase.auth.getSession();
 
-      if (!mounted) return;
+      if (!mountedRef.current) return;
 
-      setSession(initialSession ?? null);
+      setSession(nextSession ?? null);
       setAuthLoading(false);
-      await loadProfile(initialSession ?? null);
+      await loadProfile(nextSession ?? null);
     }
 
-    init();
+    refreshAuthState();
 
     const {
       data: { subscription }
     } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
-      if (!mounted) return;
+      if (!mountedRef.current) return;
 
       setSession(nextSession ?? null);
       setAuthLoading(false);
       await loadProfile(nextSession ?? null);
     });
 
+    const handleFocus = () => {
+      refreshAuthState();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshAuthState();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
-      mounted = false;
+      mountedRef.current = false;
       subscription.unsubscribe();
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
 
