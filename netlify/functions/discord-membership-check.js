@@ -42,6 +42,9 @@ export async function handler(event) {
       };
     }
 
+    const serverId = process.env.DISCORD_SERVER_ID;
+
+    // STEP 1: confirm user is in guild
     const guildsRes = await fetch('https://discord.com/api/users/@me/guilds', {
       headers: {
         Authorization: `Bearer ${providerToken}`
@@ -57,7 +60,6 @@ export async function handler(event) {
     }
 
     const guilds = await guildsRes.json();
-    const serverId = process.env.DISCORD_SERVER_ID;
     const inServer = Array.isArray(guilds) && guilds.some((g) => g.id === serverId);
 
     if (!inServer) {
@@ -67,6 +69,35 @@ export async function handler(event) {
         body: JSON.stringify({ ok: false, error: 'Not in server' })
       };
     }
+
+    // STEP 2: fetch guild member to get nickname
+    let nickname = null;
+
+    try {
+      const memberRes = await fetch(
+        `https://discord.com/api/users/@me/guilds/${serverId}/member`,
+        {
+          headers: {
+            Authorization: `Bearer ${providerToken}`
+          }
+        }
+      );
+
+      if (memberRes.ok) {
+        const member = await memberRes.json();
+        nickname = member?.nick || null;
+      }
+    } catch {
+      // silently fail — fallback below
+    }
+
+    // FINAL NAME PRIORITY
+    const finalDisplayName =
+      nickname ||
+      discordUsername ||
+      fullName ||
+      email ||
+      'Momentum Agent';
 
     const supabase = createClient(
       process.env.SUPABASE_URL,
@@ -78,7 +109,7 @@ export async function handler(event) {
       email: email || null,
       discord_id: discordId,
       discord_username: discordUsername || email || 'discord-user',
-      display_name: fullName || 'Momentum Agent',
+      display_name: finalDisplayName,
       avatar_url: avatarUrl,
       allowed_lead_types: ['Veteran'],
       leads_paused: false,
@@ -100,7 +131,7 @@ export async function handler(event) {
           email: email || existing.email,
           discord_id: discordId || existing.discord_id,
           discord_username: discordUsername || existing.discord_username,
-          display_name: fullName || existing.display_name,
+          display_name: finalDisplayName, // 🔥 ALWAYS SYNC NAME
           avatar_url: avatarUrl || existing.avatar_url
         })
         .eq('id', userId);
