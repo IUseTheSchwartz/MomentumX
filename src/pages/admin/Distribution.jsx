@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import DataTable from '../../components/DataTable';
+import { writeAdminLog } from '../../lib/adminLog';
 
 const blank = {
   tier_id: '',
@@ -66,14 +67,23 @@ export default function Distribution() {
       fresh_day_of_week: freshAmount > 0 ? form.fresh_day_of_week || null : null
     };
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('distribution_rules')
-      .insert(payload);
+      .insert(payload)
+      .select()
+      .single();
 
     if (error) {
       setMessage(error.message || 'Could not save rule.');
       return;
     }
+
+    await writeAdminLog({
+      action: 'Created distribution rule',
+      targetType: 'distribution_rule',
+      targetId: data.id,
+      details: payload
+    });
 
     setForm(blank);
     setMessage('Rule saved.');
@@ -82,12 +92,22 @@ export default function Distribution() {
 
   async function deleteRule(id) {
     setMessage('');
+
+    const rule = rows.find((row) => row.id === id) || null;
+
     const { error } = await supabase.from('distribution_rules').delete().eq('id', id);
 
     if (error) {
       setMessage(error.message || 'Could not delete rule.');
       return;
     }
+
+    await writeAdminLog({
+      action: 'Deleted distribution rule',
+      targetType: 'distribution_rule',
+      targetId: id,
+      details: rule || {}
+    });
 
     setMessage('Rule deleted.');
     load();
@@ -109,6 +129,13 @@ export default function Distribution() {
       if (!res.ok) {
         throw new Error(data?.error || 'Force run failed.');
       }
+
+      await writeAdminLog({
+        action: 'Forced distribution run',
+        targetType: 'distribution_rule',
+        targetId: row.id,
+        details: data.summary || {}
+      });
 
       setMessage(
         `Force run completed for ${row.tiers?.name || 'tier'}: ${data.summary?.assignedAged || 0} aged, ${data.summary?.assignedFresh || 0} fresh.`
