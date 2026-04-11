@@ -38,6 +38,10 @@ function appendCallHistory(existingNotes, amount) {
   return current ? `${current}\n${entry}` : entry;
 }
 
+function todayDateKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 export default function Leads() {
   const [rows, setRows] = useState([]);
   const [activeLead, setActiveLead] = useState(null);
@@ -77,11 +81,13 @@ export default function Leads() {
     load();
   }, []);
 
-  function replaceRow(updatedRow) {
-    setRows((prev) => prev.map((row) => (row.id === updatedRow.id ? { ...row, ...updatedRow } : row)));
+  function replaceRowLocally(id, patch) {
+    setRows((prev) =>
+      prev.map((row) => (row.id === id ? { ...row, ...patch } : row))
+    );
   }
 
-  async function updateLead(id, patch) {
+  async function persistLeadPatch(id, patch) {
     const query = supabase
       .from('leads')
       .update(patch)
@@ -89,14 +95,57 @@ export default function Leads() {
 
     const scopedQuery = sessionUserId ? query.eq('assigned_to', sessionUserId) : query;
 
-    const { data, error } = await scopedQuery
-      .select('*')
-      .single();
+    const { error } = await scopedQuery;
 
     if (error) throw error;
+  }
 
-    replaceRow(data);
-    return data;
+  async function upsertKpiDelta(delta) {
+    if (!sessionUserId) return;
+
+    const entryDate = todayDateKey();
+
+    const { data: existing, error: fetchError } = await supabase
+      .from('kpi_entries')
+      .select('*')
+      .eq('agent_id', sessionUserId)
+      .eq('entry_date', entryDate)
+      .maybeSingle();
+
+    if (fetchError) throw fetchError;
+
+    if (existing) {
+      const patch = {
+        dials: Number(existing.dials || 0) + Number(delta.dials || 0),
+        contacts: Number(existing.contacts || 0) + Number(delta.contacts || 0),
+        sits: Number(existing.sits || 0) + Number(delta.sits || 0),
+        sales: Number(existing.sales || 0) + Number(delta.sales || 0),
+        premium_submitted:
+          Number(existing.premium_submitted || 0) + Number(delta.premium_submitted || 0),
+        ap_sold: Number(existing.ap_sold || 0) + Number(delta.ap_sold || 0)
+      };
+
+      const { error: updateError } = await supabase
+        .from('kpi_entries')
+        .update(patch)
+        .eq('id', existing.id);
+
+      if (updateError) throw updateError;
+      return;
+    }
+
+    const { error: insertError } = await supabase.from('kpi_entries').insert({
+      agent_id: sessionUserId,
+      entry_date: entryDate,
+      dials: Number(delta.dials || 0),
+      contacts: Number(delta.contacts || 0),
+      sits: Number(delta.sits || 0),
+      sales: Number(delta.sales || 0),
+      premium_submitted: Number(delta.premium_submitted || 0),
+      ap_sold: Number(delta.ap_sold || 0)
+    });
+
+    if (insertError) throw insertError;
   }
 
   async function markCalled(row) {
@@ -104,14 +153,20 @@ export default function Leads() {
     const visibleToday = getVisibleCalledCount(row);
     const nextVisibleCount = visibleToday + selectedAmount;
 
+    const patch = {
+      call_count: nextVisibleCount,
+      status: `Called ${nextVisibleCount}x Today`,
+      last_called_at: new Date().toISOString(),
+      notes: appendCallHistory(row.notes, selectedAmount)
+    };
+
     setBusyLeadId(row.id);
 
     try {
-      await updateLead(row.id, {
-        call_count: nextVisibleCount,
-        status: `Called ${nextVisibleCount}x Today`,
-        last_called_at: new Date().toISOString(),
-        notes: appendCallHistory(row.notes, selectedAmount)
+      await persistLeadPatch(row.id, patch);
+      replaceRowLocally(row.id, patch);
+      await upsertKpiDelta({
+        dials: selectedAmount
       });
     } catch (error) {
       console.error('Failed to mark called:', error);
@@ -122,12 +177,19 @@ export default function Leads() {
   }
 
   async function markDnc(row) {
+    const patch = {
+      do_not_call: true,
+      status: 'Do Not Call'
+    };
+
     setBusyLeadId(row.id);
 
     try {
-      await updateLead(row.id, {
-        do_not_call: true,
-        status: 'Do Not Call'
+      await persistLeadPatch(row.id, patch);
+      replaceRowLocally(row.id, patch);
+
+      await upsertKpiDelta({
+        contacts: 1
       });
     } catch (error) {
       console.error('Failed to mark DNC:', error);
@@ -138,12 +200,20 @@ export default function Leads() {
   }
 
   async function markSit(row) {
+    const patch = {
+      sit: true,
+      status: 'Sit'
+    };
+
     setBusyLeadId(row.id);
 
     try {
-      await updateLead(row.id, {
-        sit: true,
-        status: 'Sit'
+      await persistLeadPatch(row.id, patch);
+      replaceRowLocally(row.id, patch);
+
+      await upsertKpiDelta({
+        contacts: 1,
+        sits: 1
       });
     } catch (error) {
       console.error('Failed to mark sit:', error);
@@ -188,14 +258,17 @@ export default function Leads() {
         notes: saleForm.notes?.trim() || null
       };
 
-      const updatedLead = await updateLead(activeLead.id, patch);
+      await persistLeadPatch(activeLead.id, patch);
+      replaceRowLocally(activeLead.id, patch);
+
+      await upsertKpiDelta({
+        contacts: 1,
+        sales: 1,
+        ap_sold: Number.isFinite(apSold) ? apSold : 0
+      });
 
       setActiveLead(null);
       setSaleForm(saleDefaults);
-
-      if (updatedLead) {
-        replaceRow(updatedLead);
-      }
     } catch (error) {
       console.error('Failed to save sale:', error);
       setSaleError(error.message || 'Failed to save sale.');
@@ -206,10 +279,12 @@ export default function Leads() {
 
   async function saveNotes(row) {
     const note = noteDrafts[row.id] ?? row.notes ?? '';
+
     setBusyLeadId(row.id);
 
     try {
-      await updateLead(row.id, { notes: note });
+      await persistLeadPatch(row.id, { notes: note });
+      replaceRowLocally(row.id, { notes: note });
     } catch (error) {
       console.error('Failed to save notes:', error);
       alert(error.message || 'Failed to save notes.');
@@ -297,6 +372,7 @@ export default function Leads() {
                     className="btn btn-ghost btn-small"
                     onClick={() => markCalled(row)}
                     disabled={busyLeadId === row.id}
+                    type="button"
                   >
                     Mark Called
                   </button>
@@ -306,6 +382,7 @@ export default function Leads() {
                   className="btn btn-ghost btn-small"
                   onClick={() => markSit(row)}
                   disabled={busyLeadId === row.id}
+                  type="button"
                 >
                   Sit
                 </button>
@@ -314,6 +391,7 @@ export default function Leads() {
                   className="btn btn-primary btn-small"
                   onClick={() => openSale(row)}
                   disabled={busyLeadId === row.id}
+                  type="button"
                 >
                   Sale
                 </button>
@@ -322,6 +400,7 @@ export default function Leads() {
                   className="btn btn-danger btn-small"
                   onClick={() => markDnc(row)}
                   disabled={busyLeadId === row.id}
+                  type="button"
                 >
                   Do Not Call
                 </button>
@@ -365,6 +444,7 @@ export default function Leads() {
                   className="btn btn-ghost btn-small"
                   onClick={() => saveNotes(row)}
                   disabled={busyLeadId === row.id}
+                  type="button"
                 >
                   Save Notes
                 </button>
