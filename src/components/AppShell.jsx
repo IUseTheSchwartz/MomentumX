@@ -81,14 +81,40 @@ export default function AppShell({ admin = false }) {
   const canSwitchToAdmin = Boolean(profile?.is_admin);
 
   return (
-    <div className="shell">
-      <aside className="sidebar glass">
+    <div
+      className="shell"
+      style={{
+        display: 'flex',
+        height: '100vh',
+        minHeight: '100vh',
+        overflow: 'hidden'
+      }}
+    >
+      <aside
+        className="sidebar glass"
+        style={{
+          flexShrink: 0,
+          width: 260,
+          height: '100vh',
+          minHeight: '100vh',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column'
+        }}
+      >
         <div>
           <div className="brand">Momentum X</div>
           <div className="brand-sub">{admin ? 'Admin Control' : 'Agent Ops'}</div>
         </div>
 
-        <nav className="nav">
+        <nav
+          className="nav"
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflow: 'auto'
+          }}
+        >
           {links.map(([to, label]) => (
             <NavLink
               key={to}
@@ -100,7 +126,14 @@ export default function AppShell({ admin = false }) {
           ))}
         </nav>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            flexShrink: 0
+          }}
+        >
           {admin ? (
             <button className="btn btn-primary" onClick={switchMode} type="button">
               Switch to Agent
@@ -117,8 +150,29 @@ export default function AppShell({ admin = false }) {
         </div>
       </aside>
 
-      <main className="content">
-        <Outlet />
+      <main
+        className="content"
+        style={{
+          flex: 1,
+          minWidth: 0,
+          minHeight: 0,
+          height: '100vh',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column'
+        }}
+      >
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column'
+          }}
+        >
+          <Outlet />
+        </div>
       </main>
     </div>
   );
