@@ -5,9 +5,9 @@ import DataTable from '../../components/DataTable';
 const blank = {
   tier_id: '',
   aged_amount: '',
-  aged_day_of_week: 'monday',
+  aged_day_of_week: '',
   fresh_amount: '',
-  fresh_day_of_week: 'monday'
+  fresh_day_of_week: ''
 };
 
 const days = [
@@ -52,12 +52,15 @@ export default function Distribution() {
       return;
     }
 
+    const agedAmount = Number(form.aged_amount || 0);
+    const freshAmount = Number(form.fresh_amount || 0);
+
     const payload = {
       tier_id: form.tier_id,
-      aged_amount: Number(form.aged_amount || 0),
-      aged_day_of_week: form.aged_day_of_week,
-      fresh_amount: Number(form.fresh_amount || 0),
-      fresh_day_of_week: form.fresh_day_of_week
+      aged_amount: agedAmount,
+      aged_day_of_week: agedAmount > 0 ? form.aged_day_of_week || null : null,
+      fresh_amount: freshAmount,
+      fresh_day_of_week: freshAmount > 0 ? form.fresh_day_of_week || null : null
     };
 
     const { error } = await supabase
@@ -65,7 +68,7 @@ export default function Distribution() {
       .insert(payload);
 
     if (error) {
-      setMessage(error.message);
+      setMessage(error.message || 'Could not save rule.');
       return;
     }
 
@@ -80,9 +83,8 @@ export default function Distribution() {
   }
 
   async function forceDistribution(row) {
-    // UI ONLY for now — backend function comes next
     alert(
-      `Force distribution triggered for ${row.tiers?.name}. This will NOT cancel the next scheduled run.`
+      `Force distribution triggered for ${row.tiers?.name}. This does not cancel the next scheduled run.`
     );
   }
 
@@ -92,11 +94,26 @@ export default function Distribution() {
       label: 'Tier',
       render: (_v, row) => row.tiers?.name || '—'
     },
-    { key: 'aged_amount', label: 'Aged Amount' },
-    { key: 'aged_day_of_week', label: 'Aged Day' },
-    { key: 'fresh_amount', label: 'Fresh Amount' },
-    { key: 'fresh_day_of_week', label: 'Fresh Day' },
-
+    {
+      key: 'aged_amount',
+      label: 'Aged / Week',
+      render: (value) => Number(value || 0)
+    },
+    {
+      key: 'aged_day_of_week',
+      label: 'Aged Day',
+      render: (value, row) => Number(row.aged_amount || 0) > 0 ? (value || '—') : 'None'
+    },
+    {
+      key: 'fresh_amount',
+      label: 'Fresh / Week',
+      render: (value) => Number(value || 0)
+    },
+    {
+      key: 'fresh_day_of_week',
+      label: 'Fresh Day',
+      render: (value, row) => Number(row.fresh_amount || 0) > 0 ? (value || '—') : 'None'
+    },
     {
       key: 'actions',
       label: 'Actions',
@@ -105,6 +122,7 @@ export default function Distribution() {
           <button
             className="btn btn-danger btn-small"
             onClick={() => deleteRule(row.id)}
+            type="button"
           >
             Delete
           </button>
@@ -112,6 +130,7 @@ export default function Distribution() {
           <button
             className="btn btn-primary btn-small"
             onClick={() => forceDistribution(row)}
+            type="button"
           >
             Force Run
           </button>
@@ -152,10 +171,12 @@ export default function Distribution() {
             Aged Leads / Week
             <input
               type="number"
+              min="0"
               value={form.aged_amount}
               onChange={(e) =>
                 setForm((s) => ({ ...s, aged_amount: e.target.value }))
               }
+              placeholder="0"
             />
           </label>
 
@@ -166,9 +187,13 @@ export default function Distribution() {
               onChange={(e) =>
                 setForm((s) => ({ ...s, aged_day_of_week: e.target.value }))
               }
+              disabled={Number(form.aged_amount || 0) <= 0}
             >
+              <option value="">None</option>
               {days.map((d) => (
-                <option key={d}>{d}</option>
+                <option key={d} value={d}>
+                  {d}
+                </option>
               ))}
             </select>
           </label>
@@ -177,10 +202,12 @@ export default function Distribution() {
             Fresh Leads / Week
             <input
               type="number"
+              min="0"
               value={form.fresh_amount}
               onChange={(e) =>
                 setForm((s) => ({ ...s, fresh_amount: e.target.value }))
               }
+              placeholder="0"
             />
           </label>
 
@@ -191,9 +218,13 @@ export default function Distribution() {
               onChange={(e) =>
                 setForm((s) => ({ ...s, fresh_day_of_week: e.target.value }))
               }
+              disabled={Number(form.fresh_amount || 0) <= 0}
             >
+              <option value="">None</option>
               {days.map((d) => (
-                <option key={d}>{d}</option>
+                <option key={d} value={d}>
+                  {d}
+                </option>
               ))}
             </select>
           </label>
@@ -203,7 +234,7 @@ export default function Distribution() {
           Save Rule
         </button>
 
-        {message && <div className="top-gap">{message}</div>}
+        {message ? <div className="top-gap">{message}</div> : null}
       </form>
 
       <div className="top-gap">
