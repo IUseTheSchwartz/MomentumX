@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import DataTable from '../../components/DataTable';
+import { writeAdminLog } from '../../lib/adminLog';
 
 const leadTypes = ['Veteran', 'Trucker IUL', 'Mortgage', 'General IUL'];
 
@@ -12,7 +13,7 @@ export default function Agents() {
     const [{ data: profiles }, { data: tierRows }] = await Promise.all([
       supabase
         .from('profiles')
-        .select('*, tiers(name, manual_only)')
+        .select('*, tiers(name)')
         .order('created_at', { ascending: false }),
       supabase.from('tiers').select('id, name').order('sort_order')
     ]);
@@ -25,8 +26,21 @@ export default function Agents() {
     load();
   }, []);
 
-  async function updateProfile(id, patch) {
+  async function updateProfile(id, patch, actionLabel = 'Updated agent') {
+    const before = rows.find((row) => row.id === id) || null;
+
     await supabase.from('profiles').update(patch).eq('id', id);
+
+    await writeAdminLog({
+      action: actionLabel,
+      targetType: 'profile',
+      targetId: id,
+      details: {
+        before,
+        patch
+      }
+    });
+
     load();
   }
 
@@ -36,7 +50,7 @@ export default function Agents() {
       ? current.filter((x) => x !== type)
       : [...current, type];
 
-    updateProfile(row.id, { allowed_lead_types: next });
+    updateProfile(row.id, { allowed_lead_types: next }, 'Updated allowed lead types');
   }
 
   const columns = [
@@ -76,7 +90,9 @@ export default function Agents() {
       render: (value, row) => (
         <button
           className="btn btn-ghost btn-small"
-          onClick={() => updateProfile(row.id, { leads_paused: !value })}
+          onClick={() =>
+            updateProfile(row.id, { leads_paused: !value }, 'Toggled leads paused')
+          }
           type="button"
         >
           {value ? 'Yes' : 'No'}
@@ -89,7 +105,9 @@ export default function Agents() {
       render: (value, row) => (
         <button
           className="btn btn-danger btn-small"
-          onClick={() => updateProfile(row.id, { lead_access_banned: !value })}
+          onClick={() =>
+            updateProfile(row.id, { lead_access_banned: !value }, 'Toggled lead ineligible')
+          }
           type="button"
         >
           {value ? 'Yes' : 'No'}
@@ -102,7 +120,13 @@ export default function Agents() {
       render: (_value, row) => (
         <select
           value={row.tier_id || ''}
-          onChange={(e) => updateProfile(row.id, { tier_id: e.target.value || null })}
+          onChange={(e) =>
+            updateProfile(
+              row.id,
+              { tier_id: e.target.value || null },
+              'Changed agent tier'
+            )
+          }
         >
           <option value="">No Tier</option>
           {tiers.map((tier) => (
