@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 
@@ -7,12 +7,13 @@ export default function ProtectedRoute({ children }) {
   const [profileLoading, setProfileLoading] = useState(false);
   const [session, setSession] = useState(undefined);
   const [profile, setProfile] = useState(null);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
-    let mounted = true;
+    mountedRef.current = true;
 
     async function loadProfile(nextSession) {
-      if (!mounted) return;
+      if (!mountedRef.current) return;
 
       if (!nextSession) {
         setProfile(null);
@@ -28,44 +29,54 @@ export default function ProtectedRoute({ children }) {
         .eq('id', nextSession.user.id)
         .maybeSingle();
 
-      if (!mounted) return;
+      if (!mountedRef.current) return;
 
-      if (error) {
-        setProfile(null);
-      } else {
-        setProfile(data || null);
-      }
-
+      setProfile(error ? null : (data || null));
       setProfileLoading(false);
     }
 
-    async function init() {
+    async function refreshAuthState() {
       const {
-        data: { session: initialSession }
+        data: { session: nextSession }
       } = await supabase.auth.getSession();
 
-      if (!mounted) return;
+      if (!mountedRef.current) return;
 
-      setSession(initialSession ?? null);
+      setSession(nextSession ?? null);
       setAuthLoading(false);
-      await loadProfile(initialSession ?? null);
+      await loadProfile(nextSession ?? null);
     }
 
-    init();
+    refreshAuthState();
 
     const {
       data: { subscription }
     } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
-      if (!mounted) return;
+      if (!mountedRef.current) return;
 
       setSession(nextSession ?? null);
       setAuthLoading(false);
       await loadProfile(nextSession ?? null);
     });
 
+    const handleFocus = () => {
+      refreshAuthState();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshAuthState();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
-      mounted = false;
+      mountedRef.current = false;
       subscription.unsubscribe();
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
 
