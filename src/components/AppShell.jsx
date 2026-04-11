@@ -29,6 +29,14 @@ export default function AppShell({ admin = false }) {
     navigate('/');
   }
 
+  function switchMode() {
+    if (admin) {
+      navigate('/app/dashboard');
+    } else {
+      navigate('/admin/overview');
+    }
+  }
+
   return (
     <div className="shell">
       <aside className="sidebar glass">
@@ -49,9 +57,18 @@ export default function AppShell({ admin = false }) {
           ))}
         </nav>
 
-        <button className="btn btn-ghost" onClick={signOut}>
-          Sign Out
-        </button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <button
+            className="btn btn-primary"
+            onClick={switchMode}
+          >
+            {admin ? 'Switch to Agent' : 'Switch to Admin'}
+          </button>
+
+          <button className="btn btn-ghost" onClick={signOut}>
+            Sign Out
+          </button>
+        </div>
       </aside>
 
       <main className="content">
