@@ -14,65 +14,142 @@ function formatDate(value) {
 
 function normalizePhone(value) {
   if (!value) return null;
-  return String(value).trim();
+  const cleaned = String(value).trim();
+  return cleaned || null;
+}
+
+function normalizeKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/['"]/g, '')
+    .replace(/\s+/g, '_')
+    .replace(/[^\w]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function splitLine(line, delimiter) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    const next = line[i + 1];
+
+    if (char === '"') {
+      if (inQuotes && next === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === delimiter && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  result.push(current.trim());
+
+  return result.map((value) => value.replace(/^"|"$/g, '').trim());
+}
+
+function detectDelimiter(text) {
+  const firstLine = text.split(/\r?\n/).find((line) => line.trim()) || '';
+  const commaCount = (firstLine.match(/,/g) || []).length;
+  const tabCount = (firstLine.match(/\t/g) || []).length;
+  return tabCount > commaCount ? '\t' : ',';
 }
 
 function parseCsv(text) {
+  const delimiter = detectDelimiter(text);
+
   const lines = text
     .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+    .map((line) => line.replace(/\uFEFF/g, ''))
+    .filter((line) => line.trim());
 
   if (!lines.length) return [];
 
-  const headers = lines[0]
-    .split(',')
-    .map((h) => h.trim().replace(/^"|"$/g, ''));
+  const rawHeaders = splitLine(lines[0], delimiter);
+  const headers = rawHeaders.map((header) => header.trim());
 
-  return lines.slice(1).map((line) => {
-    const values = line.split(',').map((v) => v.trim().replace(/^"|"$/g, ''));
-    const row = {};
+  return lines
+    .slice(1)
+    .map((line) => {
+      const values = splitLine(line, delimiter);
+      const row = {};
 
-    headers.forEach((header, index) => {
-      row[header] = values[index] ?? '';
-    });
+      headers.forEach((header, index) => {
+        row[header] = values[index] ?? '';
+        row[normalizeKey(header)] = values[index] ?? '';
+      });
 
-    return row;
-  });
+      return row;
+    })
+    .filter((row) =>
+      Object.values(row).some((value) => String(value || '').trim() !== '')
+    );
+}
+
+function getFirstValue(rawRow, keys) {
+  for (const key of keys) {
+    if (rawRow[key] != null && String(rawRow[key]).trim() !== '') {
+      return String(rawRow[key]).trim();
+    }
+  }
+
+  return '';
 }
 
 function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
-  const firstName =
-    rawRow.first_name ||
-    rawRow.firstname ||
-    rawRow.first ||
-    rawRow.First ||
-    rawRow['First Name'] ||
-    '';
+  const firstName = getFirstValue(rawRow, [
+    'first_name',
+    'firstname',
+    'first',
+    'First Name',
+    'first_name_',
+    'first_name__',
+    'full_name_first',
+    'first_name'
+  ]);
 
-  const lastName =
-    rawRow.last_name ||
-    rawRow.lastname ||
-    rawRow.last ||
-    rawRow.Last ||
-    rawRow['Last Name'] ||
-    '';
+  const lastName = getFirstValue(rawRow, [
+    'last_name',
+    'lastname',
+    'last',
+    'Last Name',
+    'last_name_',
+    'last_name__'
+  ]);
 
-  const phone =
-    rawRow.phone ||
-    rawRow.Phone ||
-    rawRow.mobile ||
-    rawRow.Mobile ||
-    rawRow.cell ||
-    rawRow.Cell ||
-    '';
+  const phone = getFirstValue(rawRow, [
+    'phone',
+    'phone_1',
+    'Phone',
+    'Phone 1',
+    'mobile',
+    'Mobile',
+    'cell',
+    'Cell',
+    'confirm_your_phone'
+  ]);
 
-  const email =
-    rawRow.email ||
-    rawRow.Email ||
-    '';
+  const email = getFirstValue(rawRow, [
+    'email',
+    'Email',
+    'email_address'
+  ]);
 
-  return {
+  const baseRow = {
     batch_id: batchId,
     source_batch: batchName,
     first_name: firstName || null,
@@ -83,6 +160,48 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
     lead_category: leadCategory,
     status: 'New'
   };
+
+  if (leadType === 'Veteran') {
+    return {
+      ...baseRow,
+      first_name:
+        getFirstValue(rawRow, ['First Name', 'first_name', 'firstname']) || baseRow.first_name,
+      last_name:
+        getFirstValue(rawRow, ['Last Name', 'last_name', 'lastname']) || baseRow.last_name,
+      phone:
+        normalizePhone(getFirstValue(rawRow, ['Phone 1', 'phone_1', 'phone'])) || baseRow.phone,
+      email:
+        getFirstValue(rawRow, ['Email', 'email']) || baseRow.email
+    };
+  }
+
+  if (leadType === 'Trucker IUL') {
+    return {
+      ...baseRow,
+      first_name:
+        getFirstValue(rawRow, ['First Name', 'first_name', 'firstname']) || baseRow.first_name,
+      last_name:
+        getFirstValue(rawRow, ['Last Name', 'last_name', 'lastname']) || baseRow.last_name,
+      phone:
+        normalizePhone(getFirstValue(rawRow, ['Phone 1', 'phone_1', 'phone'])) || baseRow.phone,
+      email:
+        getFirstValue(rawRow, ['Email', 'email']) || baseRow.email
+    };
+  }
+
+  return baseRow;
+}
+
+function validateMappedRows(leadRows) {
+  const validRows = leadRows.filter((row) => row.first_name || row.last_name || row.phone || row.email);
+
+  if (!validRows.length) {
+    throw new Error(
+      'No usable leads found. The file was parsed, but none of the rows matched the expected name/phone/email fields.'
+    );
+  }
+
+  return validRows;
 }
 
 function matchesSearch(row, query) {
@@ -181,9 +300,11 @@ export default function LeadsAdmin() {
 
       if (batchError) throw batchError;
 
-      const leadRows = parsedRows.map((row) =>
+      const mappedRows = parsedRows.map((row) =>
         mapLeadRow(row, leadType, leadCategory, batchRow.id, finalBatchName)
       );
+
+      const leadRows = validateMappedRows(mappedRows);
 
       const { error: leadsError } = await supabase.from('leads').insert(leadRows);
       if (leadsError) throw leadsError;
@@ -196,8 +317,9 @@ export default function LeadsAdmin() {
           batch_name: finalBatchName,
           lead_type: leadType,
           lead_category: leadCategory,
-          total_uploaded: parsedRows.length,
-          summary: `Imported ${parsedRows.length} ${leadCategory} ${leadType} leads into batch "${finalBatchName}".`
+          total_uploaded: leadRows.length,
+          original_rows_detected: parsedRows.length,
+          summary: `Imported ${leadRows.length} ${leadCategory} ${leadType} leads into batch "${finalBatchName}".`
         }
       });
 
@@ -255,6 +377,7 @@ export default function LeadsAdmin() {
     { key: 'first_name', label: 'First' },
     { key: 'last_name', label: 'Last' },
     { key: 'phone', label: 'Phone' },
+    { key: 'email', label: 'Email' },
     { key: 'lead_type', label: 'Lead Type' },
     { key: 'lead_category', label: 'Category' },
     { key: 'status', label: 'Status' },
@@ -337,7 +460,7 @@ export default function LeadsAdmin() {
             CSV File
             <input
               type="file"
-              accept=".csv,text/csv"
+              accept=".csv,.tsv,text/csv,text/tab-separated-values"
               onChange={(e) => setFile(e.target.files?.[0] || null)}
             />
           </label>
