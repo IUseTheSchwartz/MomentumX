@@ -5,28 +5,39 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-function getChicagoNowIso() {
-  return new Date().toISOString();
+function isTierOne(tier) {
+  const name = String(tier?.name || '').trim().toLowerCase();
+  return name.includes('tier 1');
 }
 
 exports.handler = async function () {
   try {
     const { data: tiers, error: tiersError } = await supabase
       .from('tiers')
-      .select('id, name, duration_days')
-      .not('duration_days', 'is', null);
+      .select('id, name, duration_days, sort_order');
 
     if (tiersError) throw tiersError;
 
-    const tier1Like = (tiers || []).find((tier) => Number(tier.duration_days || 0) > 0);
+    const tier1 = (tiers || []).find((tier) => isTierOne(tier));
 
-    if (!tier1Like) {
+    if (!tier1) {
       return {
         statusCode: 200,
         body: JSON.stringify({
           ok: true,
           expiredCount: 0,
-          message: 'No timed tiers found.'
+          message: 'Tier 1 not found.'
+        })
+      };
+    }
+
+    if (!tier1.duration_days || Number(tier1.duration_days) <= 0) {
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          ok: true,
+          expiredCount: 0,
+          message: 'Tier 1 has no timed duration configured.'
         })
       };
     }
@@ -34,7 +45,7 @@ exports.handler = async function () {
     const { data: profiles, error: profilesError } = await supabase
       .from('profiles')
       .select('id, display_name, email, tier_id, tier_assigned_at')
-      .eq('tier_id', tier1Like.id)
+      .eq('tier_id', tier1.id)
       .not('tier_assigned_at', 'is', null);
 
     if (profilesError) throw profilesError;
@@ -47,7 +58,7 @@ exports.handler = async function () {
       const elapsedMs = now.getTime() - assignedAt.getTime();
       const elapsedDays = elapsedMs / (1000 * 60 * 60 * 24);
 
-      return elapsedDays >= Number(tier1Like.duration_days || 0);
+      return elapsedDays >= Number(tier1.duration_days);
     });
 
     let expiredCount = 0;
@@ -72,19 +83,20 @@ exports.handler = async function () {
         .from('admin_logs')
         .insert({
           admin_id: null,
-          action: 'Tier auto-expired',
+          action: 'Tier 1 auto-expired',
           target_type: 'profile',
           target_id: profile.id,
           details: {
-            summary: `system auto-expired ${profile.display_name || profile.email || 'agent'} from ${tier1Like.name} after ${tier1Like.duration_days} days`,
+            summary: `system auto-expired ${profile.display_name || profile.email || 'agent'} from ${tier1.name} after ${tier1.duration_days} days`,
             before,
             patch: {
               tier_id: null,
               tier_assigned_at: null
             },
             system_generated: true,
-            expired_at: getChicagoNowIso(),
-            expired_tier_name: tier1Like.name
+            expired_tier_name: tier1.name,
+            expired_after_days: tier1.duration_days,
+            expired_at: new Date().toISOString()
           }
         });
 
@@ -97,7 +109,8 @@ exports.handler = async function () {
       statusCode: 200,
       body: JSON.stringify({
         ok: true,
-        expiredCount
+        expiredCount,
+        tierName: tier1.name
       })
     };
   } catch (error) {
