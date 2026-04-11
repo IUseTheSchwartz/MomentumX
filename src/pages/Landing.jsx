@@ -7,6 +7,14 @@ export default function Landing() {
   const navigate = useNavigate();
 
   useEffect(() => {
+    const hash = window.location.hash || '';
+
+    // If Supabase drops us back on /#access_token=...
+    if (hash.includes('access_token=')) {
+      navigate('/auth/callback', { replace: true });
+      return;
+    }
+
     let mounted = true;
 
     async function bootstrap() {
