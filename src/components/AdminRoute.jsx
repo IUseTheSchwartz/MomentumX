@@ -13,28 +13,49 @@ export default function AdminRoute({ children }) {
     let mounted = true;
 
     async function load() {
-      const {
-        data: { session }
-      } = await supabase.auth.getSession();
+      try {
+        const {
+          data: { session }
+        } = await supabase.auth.getSession();
 
-      if (!session) {
-        if (mounted) setState({ loading: false, session: null, profile: null });
-        return;
+        if (!session) {
+          if (mounted) {
+            setState({ loading: false, session: null, profile: null });
+          }
+          return;
+        }
+
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', session.user.id)
+          .maybeSingle();
+
+        if (mounted) {
+          setState({
+            loading: false,
+            session,
+            profile: profile || null
+          });
+        }
+      } catch (_error) {
+        if (mounted) {
+          setState({ loading: false, session: null, profile: null });
+        }
       }
-
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', session.user.id)
-        .single();
-
-      if (mounted) setState({ loading: false, session, profile });
     }
 
     load();
 
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange(() => {
+      load();
+    });
+
     return () => {
       mounted = false;
+      subscription.unsubscribe();
     };
   }, []);
 
