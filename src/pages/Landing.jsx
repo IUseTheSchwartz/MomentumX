@@ -1,7 +1,40 @@
+import { useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import Starfield from '../components/Starfield';
 
 export default function Landing() {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function bootstrap() {
+      const {
+        data: { session }
+      } = await supabase.auth.getSession();
+
+      if (mounted && session) {
+        navigate('/auth/callback', { replace: true });
+      }
+    }
+
+    bootstrap();
+
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (mounted && session) {
+        navigate('/auth/callback', { replace: true });
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [navigate]);
+
   async function loginWithDiscord() {
     const redirectTo = `${window.location.origin}/auth/callback`;
 
