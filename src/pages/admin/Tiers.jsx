@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import DataTable from '../../components/DataTable';
+import { writeAdminLog } from '../../lib/adminLog';
 
 function isManualTier(row) {
-  return row.slug === 'tier-2' || row.slug === 'tier-3' || row.duration_days === null;
+  return row.duration_days === null;
 }
 
 export default function Tiers() {
@@ -22,14 +23,26 @@ export default function Tiers() {
     load();
   }, []);
 
-  async function updateTier(id, patch) {
+  async function updateTier(id, patch, actionLabel = 'Updated tier') {
+    const before = rows.find((row) => row.id === id) || null;
+
     await supabase.from('tiers').update(patch).eq('id', id);
+
+    await writeAdminLog({
+      action: actionLabel,
+      targetType: 'tier',
+      targetId: id,
+      details: {
+        before,
+        patch
+      }
+    });
+
     load();
   }
 
   const columns = [
     { key: 'name', label: 'Tier' },
-
     {
       key: 'duration_mode',
       label: 'Duration Type',
@@ -43,9 +56,9 @@ export default function Tiers() {
               const next = e.target.value;
 
               if (next === 'manual') {
-                updateTier(row.id, { duration_days: null });
+                updateTier(row.id, { duration_days: null }, 'Set tier to no duration');
               } else {
-                updateTier(row.id, { duration_days: 30 });
+                updateTier(row.id, { duration_days: 30 }, 'Set tier to timed duration');
               }
             }}
           >
@@ -55,7 +68,6 @@ export default function Tiers() {
         );
       }
     },
-
     {
       key: 'duration_days',
       label: 'Duration',
@@ -72,16 +84,17 @@ export default function Tiers() {
             min="1"
             value={value || 30}
             onChange={(e) =>
-              updateTier(row.id, {
-                duration_days: Number(e.target.value || 30)
-              })
+              updateTier(
+                row.id,
+                { duration_days: Number(e.target.value || 30) },
+                'Updated tier duration'
+              )
             }
             style={{ width: 90 }}
           />
         );
       }
     },
-
     {
       key: 'kpi_required',
       label: 'KPI Required',
@@ -89,7 +102,7 @@ export default function Tiers() {
         <button
           className="btn btn-ghost btn-small"
           onClick={() =>
-            updateTier(row.id, { kpi_required: !value })
+            updateTier(row.id, { kpi_required: !value }, 'Toggled tier KPI required')
           }
           type="button"
         >
@@ -97,7 +110,6 @@ export default function Tiers() {
         </button>
       )
     },
-
     { key: 'description', label: 'Description' }
   ];
 
