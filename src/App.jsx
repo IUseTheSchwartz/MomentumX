@@ -1,72 +1,117 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
-import ProtectedRoute from './components/ProtectedRoute';
-import AdminRoute from './components/AdminRoute';
-import AppShell from './components/AppShell';
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { supabase } from '../lib/supabaseClient';
+import Starfield from '../components/Starfield';
 
-import Landing from './pages/Landing';
-import AuthCallback from './pages/AuthCallback';
-import Denied from './pages/Denied';
-import Ineligible from './pages/Ineligible';
+export default function Landing() {
+  const navigate = useNavigate();
+  const [showX, setShowX] = useState(false);
 
-import Dashboard from './pages/app/Dashboard';
-import Leads from './pages/app/Leads';
-import KPI from './pages/app/KPI';
-import Requirements from './pages/app/Requirements';
-import Recordings from './pages/app/Recordings';
-import BookOfBusiness from './pages/app/BookOfBusiness';
-import Support from './pages/app/Support';
+  useEffect(() => {
+    const hash = window.location.hash || '';
+    if (hash.includes('access_token=')) {
+      navigate('/auth/callback', { replace: true });
+      return;
+    }
 
-import Overview from './pages/admin/Overview';
-import Agents from './pages/admin/Agents';
-import LeadsAdmin from './pages/admin/LeadsAdmin';
-import Tiers from './pages/admin/Tiers';
-import Distribution from './pages/admin/Distribution';
-import KPIAdmin from './pages/admin/KPIAdmin';
+    let mounted = true;
 
-export default function App() {
+    async function bootstrap() {
+      const {
+        data: { session }
+      } = await supabase.auth.getSession();
+
+      if (mounted && session) {
+        navigate('/auth/callback', { replace: true });
+      }
+    }
+
+    bootstrap();
+
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (mounted && session) {
+        navigate('/auth/callback', { replace: true });
+      }
+    });
+
+    const timer = setTimeout(() => {
+      setShowX(true);
+    }, 500);
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+      clearTimeout(timer);
+    };
+  }, [navigate]);
+
+  async function loginWithDiscord() {
+    const redirectTo = `${window.location.origin}/auth/callback`;
+
+    await supabase.auth.signInWithOAuth({
+      provider: 'discord',
+      options: {
+        redirectTo,
+        scopes: 'identify guilds'
+      }
+    });
+  }
+
   return (
-    <Routes>
-      <Route path="/" element={<Landing />} />
-      <Route path="/auth/callback" element={<AuthCallback />} />
-      <Route path="/denied" element={<Denied />} />
-      <Route path="/ineligible" element={<Ineligible />} />
+    <div className="landing landing-full">
+      <Starfield />
 
-      <Route
-        path="/app"
-        element={
-          <ProtectedRoute>
-            <AppShell />
-          </ProtectedRoute>
-        }
-      >
-        <Route index element={<Navigate to="/app/dashboard" replace />} />
-        <Route path="dashboard" element={<Dashboard />} />
-        <Route path="leads" element={<Leads />} />
-        <Route path="kpi" element={<KPI />} />
-        <Route path="requirements" element={<Requirements />} />
-        <Route path="recordings" element={<Recordings />} />
-        <Route path="book" element={<BookOfBusiness />} />
-        <Route path="support" element={<Support />} />
-      </Route>
+      <section className="landing-hero">
+        <div className="hero-wordmark">
+          <span className="momentum-word">MOMENTUM</span>
+          <span className={showX ? 'x-mark visible' : 'x-mark'}>X</span>
+        </div>
 
-      <Route
-        path="/admin"
-        element={
-          <AdminRoute>
-            <AppShell admin />
-          </AdminRoute>
-        }
-      >
-        <Route index element={<Navigate to="/admin/overview" replace />} />
-        <Route path="overview" element={<Overview />} />
-        <Route path="agents" element={<Agents />} />
-        <Route path="leads" element={<LeadsAdmin />} />
-        <Route path="tiers" element={<Tiers />} />
-        <Route path="distribution" element={<Distribution />} />
-        <Route path="kpi" element={<KPIAdmin />} />
-      </Route>
+        <p className="landing-subcopy">
+          Performance-based lead access for agents who produce, stay accountable,
+          and scale with consistency.
+        </p>
 
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+        <button className="btn btn-primary landing-login" onClick={loginWithDiscord}>
+          Login with Discord
+        </button>
+      </section>
+
+      <section className="landing-info">
+        <div className="info-block glass">
+          <h2>What the system is used for</h2>
+          <p>
+            Momentum X is built to get new agents producing faster, reward performance,
+            scale top producers, and maximize every lead opportunity.
+          </p>
+        </div>
+
+        <div className="info-grid">
+          <div className="info-card glass">
+            <h3>Tier 1</h3>
+            <p>Foundation phase. Build work ethic, activity, and consistency.</p>
+          </div>
+
+          <div className="info-card glass">
+            <h3>Tier 2</h3>
+            <p>Development phase. Proven producers get access to better lead flow and more opportunity.</p>
+          </div>
+
+          <div className="info-card glass">
+            <h3>Tier 3</h3>
+            <p>Scale phase. Reserved for strong, consistent producers who maintain volume.</p>
+          </div>
+        </div>
+
+        <div className="info-block glass">
+          <h2>Bottom line</h2>
+          <p>
+            Produce → Earn More Leads → Scale Faster → Keep More Income
+          </p>
+        </div>
+      </section>
+    </div>
   );
 }
