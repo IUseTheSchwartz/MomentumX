@@ -22,7 +22,6 @@ import AgentsRequirements from './pages/admin/AgentsRequirements';
 import LeadsAdmin from './pages/admin/LeadsAdmin';
 import Tiers from './pages/admin/Tiers';
 import Distribution from './pages/admin/Distribution';
-import KPIAdmin from './pages/admin/KPIAdmin';
 import Logs from './pages/admin/Logs';
 
 export default function App() {
@@ -66,7 +65,6 @@ export default function App() {
         <Route path="leads" element={<LeadsAdmin />} />
         <Route path="tiers" element={<Tiers />} />
         <Route path="distribution" element={<Distribution />} />
-        <Route path="kpi" element={<KPIAdmin />} />
         <Route path="logs" element={<Logs />} />
       </Route>
 
