@@ -143,11 +143,7 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
     'confirm_your_phone'
   ]);
 
-  const email = getFirstValue(rawRow, [
-    'email',
-    'Email',
-    'email_address'
-  ]);
+  const email = getFirstValue(rawRow, ['email', 'Email', 'email_address']);
 
   const baseRow = {
     batch_id: batchId,
@@ -170,8 +166,7 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
         getFirstValue(rawRow, ['Last Name', 'last_name', 'lastname']) || baseRow.last_name,
       phone:
         normalizePhone(getFirstValue(rawRow, ['Phone 1', 'phone_1', 'phone'])) || baseRow.phone,
-      email:
-        getFirstValue(rawRow, ['Email', 'email']) || baseRow.email
+      email: getFirstValue(rawRow, ['Email', 'email']) || baseRow.email
     };
   }
 
@@ -184,8 +179,7 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
         getFirstValue(rawRow, ['Last Name', 'last_name', 'lastname']) || baseRow.last_name,
       phone:
         normalizePhone(getFirstValue(rawRow, ['Phone 1', 'phone_1', 'phone'])) || baseRow.phone,
-      email:
-        getFirstValue(rawRow, ['Email', 'email']) || baseRow.email
+      email: getFirstValue(rawRow, ['Email', 'email']) || baseRow.email
     };
   }
 
@@ -193,7 +187,9 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
 }
 
 function validateMappedRows(leadRows) {
-  const validRows = leadRows.filter((row) => row.first_name || row.last_name || row.phone || row.email);
+  const validRows = leadRows.filter(
+    (row) => row.first_name || row.last_name || row.phone || row.email
+  );
 
   if (!validRows.length) {
     throw new Error(
@@ -327,7 +323,9 @@ export default function LeadsAdmin() {
       setBatchName('');
       setLeadType('Veteran');
       setLeadCategory('aged');
-      setMessage(`Uploaded ${leadRows.length} ${leadCategory} ${leadType} leads to batch "${finalBatchName}".`);
+      setMessage(
+        `Uploaded ${leadRows.length} ${leadCategory} ${leadType} leads to batch "${finalBatchName}".`
+      );
       await load();
     } catch (error) {
       setMessage(error.message || 'Upload failed.');
@@ -401,159 +399,159 @@ export default function LeadsAdmin() {
         overflow: 'hidden'
       }}
     >
-      <div className="page-header" style={{ flexShrink: 0 }}>
-        <div>
-          <h1>Leads</h1>
-          <p>Upload lead inventory and review current lead records.</p>
-        </div>
-      </div>
-
       <div
-        className="grid grid-3"
-        style={{ flexShrink: 0, marginBottom: 12 }}
-      >
-        <div className="glass" style={{ padding: 14 }}>
-          <strong>Total Leads</strong>
-          <div style={{ fontSize: 24, marginTop: 8 }}>{totals.total}</div>
-        </div>
-        <div className="glass" style={{ padding: 14 }}>
-          <strong>Assigned</strong>
-          <div style={{ fontSize: 24, marginTop: 8 }}>{totals.assigned}</div>
-        </div>
-        <div className="glass" style={{ padding: 14 }}>
-          <strong>Unassigned</strong>
-          <div style={{ fontSize: 24, marginTop: 8 }}>{totals.unassigned}</div>
-        </div>
-      </div>
-
-      <form className="form glass" onSubmit={handleUpload} style={{ flexShrink: 0 }}>
-        <div className="form-grid">
-          <label>
-            Lead Type
-            <select value={leadType} onChange={(e) => setLeadType(e.target.value)}>
-              {leadTypes.map((type) => (
-                <option key={type} value={type}>
-                  {type}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            Lead Category
-            <select value={leadCategory} onChange={(e) => setLeadCategory(e.target.value)}>
-              <option value="aged">Aged</option>
-              <option value="fresh">Fresh</option>
-            </select>
-          </label>
-
-          <label>
-            Batch Name
-            <input
-              value={batchName}
-              onChange={(e) => setBatchName(e.target.value)}
-              placeholder="April Veteran Upload"
-            />
-          </label>
-
-          <label>
-            CSV File
-            <input
-              type="file"
-              accept=".csv,.tsv,text/csv,text/tab-separated-values"
-              onChange={(e) => setFile(e.target.files?.[0] || null)}
-            />
-          </label>
-        </div>
-
-        <button className="btn btn-primary" type="submit" disabled={uploading}>
-          {uploading ? 'Uploading...' : 'Upload CSV'}
-        </button>
-
-        {message ? <div className="top-gap">{message}</div> : null}
-      </form>
-
-      <div className="glass top-gap" style={{ padding: 12, flexShrink: 0 }}>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
-            gap: 10
-          }}
-        >
-          <label>
-            Search
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Name, phone, email, batch..."
-            />
-          </label>
-
-          <label>
-            Lead Type
-            <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-              <option value="all">All</option>
-              {leadTypes.map((type) => (
-                <option key={type} value={type}>
-                  {type}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            Fresh / Aged
-            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
-              <option value="all">All</option>
-              <option value="fresh">Fresh</option>
-              <option value="aged">Aged</option>
-            </select>
-          </label>
-
-          <label>
-            Assignment
-            <select value={assignedFilter} onChange={(e) => setAssignedFilter(e.target.value)}>
-              <option value="all">All</option>
-              <option value="assigned">Assigned</option>
-              <option value="unassigned">Unassigned</option>
-            </select>
-          </label>
-
-          <label>
-            Sort
-            <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)}>
-              <option value="newest">Newest to Oldest</option>
-              <option value="oldest">Oldest to Newest</option>
-            </select>
-          </label>
-
-          <label>
-            Show
-            <select value={pageSize} onChange={(e) => setPageSize(e.target.value)}>
-              <option value="10">10</option>
-              <option value="50">50</option>
-              <option value="100">100</option>
-              <option value="1000">1000</option>
-              <option value="all">Show All</option>
-            </select>
-          </label>
-        </div>
-
-        <div className="top-gap" style={{ fontSize: 14, opacity: 0.85 }}>
-          Showing {visibleRows.length} of {filteredRows.length} matching leads
-        </div>
-      </div>
-
-      <div
-        className="top-gap"
         style={{
           flex: 1,
           minHeight: 0,
-          overflow: 'auto'
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          paddingRight: 4
         }}
       >
-        <DataTable columns={columns} rows={visibleRows} />
+        <div className="page-header" style={{ flexShrink: 0 }}>
+          <div>
+            <h1>Leads</h1>
+            <p>Upload lead inventory and review current lead records.</p>
+          </div>
+        </div>
+
+        <div className="grid grid-3" style={{ flexShrink: 0, marginBottom: 12 }}>
+          <div className="glass" style={{ padding: 14 }}>
+            <strong>Total Leads</strong>
+            <div style={{ fontSize: 24, marginTop: 8 }}>{totals.total}</div>
+          </div>
+          <div className="glass" style={{ padding: 14 }}>
+            <strong>Assigned</strong>
+            <div style={{ fontSize: 24, marginTop: 8 }}>{totals.assigned}</div>
+          </div>
+          <div className="glass" style={{ padding: 14 }}>
+            <strong>Unassigned</strong>
+            <div style={{ fontSize: 24, marginTop: 8 }}>{totals.unassigned}</div>
+          </div>
+        </div>
+
+        <form className="form glass" onSubmit={handleUpload} style={{ flexShrink: 0 }}>
+          <div className="form-grid">
+            <label>
+              Lead Type
+              <select value={leadType} onChange={(e) => setLeadType(e.target.value)}>
+                {leadTypes.map((type) => (
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Lead Category
+              <select value={leadCategory} onChange={(e) => setLeadCategory(e.target.value)}>
+                <option value="aged">Aged</option>
+                <option value="fresh">Fresh</option>
+              </select>
+            </label>
+
+            <label>
+              Batch Name
+              <input
+                value={batchName}
+                onChange={(e) => setBatchName(e.target.value)}
+                placeholder="April Veteran Upload"
+              />
+            </label>
+
+            <label>
+              CSV File
+              <input
+                type="file"
+                accept=".csv,.tsv,text/csv,text/tab-separated-values"
+                onChange={(e) => setFile(e.target.files?.[0] || null)}
+              />
+            </label>
+          </div>
+
+          <button className="btn btn-primary" type="submit" disabled={uploading}>
+            {uploading ? 'Uploading...' : 'Upload CSV'}
+          </button>
+
+          {message ? <div className="top-gap">{message}</div> : null}
+        </form>
+
+        <div className="glass top-gap" style={{ padding: 12, flexShrink: 0 }}>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
+              gap: 10
+            }}
+          >
+            <label>
+              Search
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Name, phone, email, batch..."
+              />
+            </label>
+
+            <label>
+              Lead Type
+              <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                <option value="all">All</option>
+                {leadTypes.map((type) => (
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Fresh / Aged
+              <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+                <option value="all">All</option>
+                <option value="fresh">Fresh</option>
+                <option value="aged">Aged</option>
+              </select>
+            </label>
+
+            <label>
+              Assignment
+              <select value={assignedFilter} onChange={(e) => setAssignedFilter(e.target.value)}>
+                <option value="all">All</option>
+                <option value="assigned">Assigned</option>
+                <option value="unassigned">Unassigned</option>
+              </select>
+            </label>
+
+            <label>
+              Sort
+              <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)}>
+                <option value="newest">Newest to Oldest</option>
+                <option value="oldest">Oldest to Newest</option>
+              </select>
+            </label>
+
+            <label>
+              Show
+              <select value={pageSize} onChange={(e) => setPageSize(e.target.value)}>
+                <option value="10">10</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="1000">1000</option>
+                <option value="all">Show All</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="top-gap" style={{ fontSize: 14, opacity: 0.85 }}>
+            Showing {visibleRows.length} of {filteredRows.length} matching leads
+          </div>
+        </div>
+
+        <div className="top-gap">
+          <DataTable columns={columns} rows={visibleRows} />
+        </div>
       </div>
     </div>
   );
