@@ -6,7 +6,7 @@ const agentLinks = [
   ['/app/dashboard', 'Dashboard'],
   ['/app/leads', 'Leads'],
   ['/app/kpi', 'KPI'],
-  ['/app/requirements', 'Requirement Checklist'],
+  ['/app/requirements', 'Requirements'],
   ['/app/recordings', 'Recordings'],
   ['/app/book', 'Book of Business'],
   ['/app/support', 'Support']
@@ -15,7 +15,7 @@ const agentLinks = [
 const adminLinks = [
   ['/admin/overview', 'Overview'],
   ['/admin/agents', 'Agents'],
-  ['/admin/agent-requirements', 'Agents Requirements'],
+  ['/admin/agents-requirements', 'Agents Requirements'],
   ['/admin/leads', 'Leads'],
   ['/admin/tiers', 'Tiers'],
   ['/admin/distribution', 'Distribution'],
