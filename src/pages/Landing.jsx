@@ -1,3 +1,4 @@
+// src/pages/Landing.jsx
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
@@ -6,6 +7,7 @@ import Starfield from '../components/Starfield';
 export default function Landing() {
   const navigate = useNavigate();
   const [showX, setShowX] = useState(false);
+  const [loggingIn, setLoggingIn] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -16,7 +18,9 @@ export default function Landing() {
     if (
       hash.includes('access_token=') ||
       hash.includes('refresh_token=') ||
-      search.includes('code=')
+      search.includes('code=') ||
+      search.includes('error=') ||
+      hash.includes('error=')
     ) {
       navigate('/auth/callback', { replace: true });
       return;
@@ -61,15 +65,26 @@ export default function Landing() {
   }, [navigate]);
 
   async function loginWithDiscord() {
-    const redirectTo = `${window.location.origin}/auth/callback`;
+    if (loggingIn) return;
 
-    await supabase.auth.signInWithOAuth({
-      provider: 'discord',
-      options: {
-        redirectTo,
-        scopes: 'identify guilds guilds.members.read'
-      }
-    });
+    setLoggingIn(true);
+
+    try {
+      await supabase.auth.signOut();
+
+      const redirectTo = `${window.location.origin}/auth/callback`;
+
+      await supabase.auth.signInWithOAuth({
+        provider: 'discord',
+        options: {
+          redirectTo,
+          scopes: 'identify email guilds guilds.members.read'
+        }
+      });
+    } catch (error) {
+      console.error('[Landing] Discord login failed', error);
+      setLoggingIn(false);
+    }
   }
 
   return (
@@ -87,8 +102,12 @@ export default function Landing() {
           and scale with consistency.
         </p>
 
-        <button className="btn btn-primary landing-login" onClick={loginWithDiscord}>
-          Login with Discord
+        <button
+          className="btn btn-primary landing-login"
+          onClick={loginWithDiscord}
+          disabled={loggingIn}
+        >
+          {loggingIn ? 'Redirecting...' : 'Login with Discord'}
         </button>
       </section>
 
