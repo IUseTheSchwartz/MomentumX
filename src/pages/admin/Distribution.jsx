@@ -161,7 +161,7 @@ export default function Distribution() {
     {
       key: 'aged_day_of_week',
       label: 'Aged Day',
-      render: (value, row) => Number(row.aged_amount || 0) > 0 ? (value || '—') : 'None'
+      render: (value, row) => (Number(row.aged_amount || 0) > 0 ? value || '—' : 'None')
     },
     {
       key: 'fresh_amount',
@@ -171,7 +171,7 @@ export default function Distribution() {
     {
       key: 'fresh_day_of_week',
       label: 'Fresh Day',
-      render: (value, row) => Number(row.fresh_amount || 0) > 0 ? (value || '—') : 'None'
+      render: (value, row) => (Number(row.fresh_amount || 0) > 0 ? value || '—' : 'None')
     },
     {
       key: 'actions',
@@ -200,105 +200,124 @@ export default function Distribution() {
   ];
 
   return (
-    <div className="page">
-      <div className="page-header">
-        <div>
-          <h1>Distribution</h1>
-          <p>Set weekly aged and fresh lead drops per tier.</p>
-        </div>
-      </div>
-
-      <form className="form glass" onSubmit={submit}>
-        <div className="form-grid">
-          <label>
-            Tier
-            <select
-              value={form.tier_id}
-              onChange={(e) =>
-                setForm((s) => ({ ...s, tier_id: e.target.value }))
-              }
-            >
-              <option value="">Select Tier</option>
-              {tiers.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            Aged Leads / Week
-            <input
-              type="number"
-              min="0"
-              value={form.aged_amount}
-              onChange={(e) =>
-                setForm((s) => ({ ...s, aged_amount: e.target.value }))
-              }
-              placeholder="0"
-            />
-          </label>
-
-          <label>
-            Aged Day
-            <select
-              value={form.aged_day_of_week}
-              onChange={(e) =>
-                setForm((s) => ({ ...s, aged_day_of_week: e.target.value }))
-              }
-              disabled={Number(form.aged_amount || 0) <= 0}
-            >
-              <option value="">None</option>
-              {days.map((d) => (
-                <option key={d} value={d}>
-                  {d}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            Fresh Leads / Week
-            <input
-              type="number"
-              min="0"
-              value={form.fresh_amount}
-              onChange={(e) =>
-                setForm((s) => ({ ...s, fresh_amount: e.target.value }))
-              }
-              placeholder="0"
-            />
-          </label>
-
-          <label>
-            Fresh Day
-            <select
-              value={form.fresh_day_of_week}
-              onChange={(e) =>
-                setForm((s) => ({ ...s, fresh_day_of_week: e.target.value }))
-              }
-              disabled={Number(form.fresh_amount || 0) <= 0}
-            >
-              <option value="">None</option>
-              {days.map((d) => (
-                <option key={d} value={d}>
-                  {d}
-                </option>
-              ))}
-            </select>
-          </label>
+    <div
+      className="page"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        minHeight: 0,
+        overflow: 'hidden'
+      }}
+    >
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          paddingRight: 4
+        }}
+      >
+        <div className="page-header">
+          <div>
+            <h1>Distribution</h1>
+            <p>Set weekly aged and fresh lead drops per tier.</p>
+          </div>
         </div>
 
-        <button className="btn btn-primary" type="submit">
-          Save Rule
-        </button>
+        <form className="form glass" onSubmit={submit}>
+          <div className="form-grid">
+            <label>
+              Tier
+              <select
+                value={form.tier_id}
+                onChange={(e) =>
+                  setForm((s) => ({ ...s, tier_id: e.target.value }))
+                }
+              >
+                <option value="">Select Tier</option>
+                {tiers.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-        {message ? <div className="top-gap">{message}</div> : null}
-      </form>
+            <label>
+              Aged Leads / Week
+              <input
+                type="number"
+                min="0"
+                value={form.aged_amount}
+                onChange={(e) =>
+                  setForm((s) => ({ ...s, aged_amount: e.target.value }))
+                }
+                placeholder="0"
+              />
+            </label>
 
-      <div className="top-gap">
-        <DataTable columns={columns} rows={rows} />
+            <label>
+              Aged Day
+              <select
+                value={form.aged_day_of_week}
+                onChange={(e) =>
+                  setForm((s) => ({ ...s, aged_day_of_week: e.target.value }))
+                }
+                disabled={Number(form.aged_amount || 0) <= 0}
+              >
+                <option value="">None</option>
+                {days.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Fresh Leads / Week
+              <input
+                type="number"
+                min="0"
+                value={form.fresh_amount}
+                onChange={(e) =>
+                  setForm((s) => ({ ...s, fresh_amount: e.target.value }))
+                }
+                placeholder="0"
+              />
+            </label>
+
+            <label>
+              Fresh Day
+              <select
+                value={form.fresh_day_of_week}
+                onChange={(e) =>
+                  setForm((s) => ({ ...s, fresh_day_of_week: e.target.value }))
+                }
+                disabled={Number(form.fresh_amount || 0) <= 0}
+              >
+                <option value="">None</option>
+                {days.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <button className="btn btn-primary" type="submit">
+            Save Rule
+          </button>
+
+          {message ? <div className="top-gap">{message}</div> : null}
+        </form>
+
+        <div className="top-gap">
+          <DataTable columns={columns} rows={rows} />
+        </div>
       </div>
     </div>
   );
