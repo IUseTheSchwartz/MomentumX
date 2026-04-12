@@ -19,7 +19,6 @@ const adminLinks = [
   ['/admin/leads', 'Leads'],
   ['/admin/tiers', 'Tiers'],
   ['/admin/distribution', 'Distribution'],
-  ['/admin/kpi', 'KPI'],
   ['/admin/logs', 'Logs']
 ];
 
