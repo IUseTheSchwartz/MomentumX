@@ -54,8 +54,7 @@ function getTierRules(tierName) {
       recordingsWeekly: 2,
       videosWeekly: 0,
       leadPacksMonthlyStay: 0,
-      leadPacksMonthlyAdvance: 0,
-      kpiRequired: true
+      leadPacksMonthlyAdvance: 0
     };
   }
 
@@ -64,8 +63,7 @@ function getTierRules(tierName) {
       recordingsWeekly: 1,
       videosWeekly: 2,
       leadPacksMonthlyStay: 1,
-      leadPacksMonthlyAdvance: 2,
-      kpiRequired: false
+      leadPacksMonthlyAdvance: 2
     };
   }
 
@@ -74,8 +72,7 @@ function getTierRules(tierName) {
       recordingsWeekly: 0,
       videosWeekly: 0,
       leadPacksMonthlyStay: 4,
-      leadPacksMonthlyAdvance: 0,
-      kpiRequired: false
+      leadPacksMonthlyAdvance: 0
     };
   }
 
@@ -83,8 +80,7 @@ function getTierRules(tierName) {
     recordingsWeekly: 0,
     videosWeekly: 0,
     leadPacksMonthlyStay: 0,
-    leadPacksMonthlyAdvance: 0,
-    kpiRequired: false
+    leadPacksMonthlyAdvance: 0
   };
 }
 
@@ -96,20 +92,16 @@ function buildChecklist(agent) {
   const recordingsThisWeek = countSince(agent.recordings, weekStart);
   const videosThisWeek = countSince(agent.videos, weekStart);
   const proofsThisMonth = countSince(agent.proofs, monthStart);
-  const hasKpiThisWeek = (agent.kpi || []).some((row) => {
-    const sourceDate = row.entry_date || row.created_at;
-    return isOnOrAfter(sourceDate, weekStart);
-  });
 
   return {
     rules,
     recordingsThisWeek,
     videosThisWeek,
     proofsThisMonth,
-    hasKpiThisWeek,
     recordingsPassed:
       rules.recordingsWeekly === 0 ? true : recordingsThisWeek >= rules.recordingsWeekly,
-    videosPassed: rules.videosWeekly === 0 ? true : videosThisWeek >= rules.videosWeekly,
+    videosPassed:
+      rules.videosWeekly === 0 ? true : videosThisWeek >= rules.videosWeekly,
     leadStayPassed:
       rules.leadPacksMonthlyStay === 0
         ? true
@@ -117,8 +109,7 @@ function buildChecklist(agent) {
     leadAdvancePassed:
       rules.leadPacksMonthlyAdvance === 0
         ? true
-        : proofsThisMonth >= rules.leadPacksMonthlyAdvance,
-    kpiPassed: rules.kpiRequired ? hasKpiThisWeek : true
+        : proofsThisMonth >= rules.leadPacksMonthlyAdvance
   };
 }
 
@@ -275,7 +266,7 @@ function ChecklistBadge({ label, current, target, passed, subtext }) {
     >
       <div style={{ fontSize: 13, opacity: 0.75 }}>{label}</div>
       <div style={{ fontSize: 22, fontWeight: 800, color, marginTop: 4 }}>
-        {target > 0 ? `${current} / ${target}` : passed ? 'Passed' : 'Failed'}
+        {current} / {target}
       </div>
       {subtext ? <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>{subtext}</div> : null}
     </div>
@@ -580,16 +571,6 @@ export default function AgentsRequirements() {
                         subtext="This month to advance"
                       />
                     ) : null}
-
-                    <ChecklistBadge
-                      label="KPI Tracking"
-                      current={checklist.hasKpiThisWeek ? 1 : 0}
-                      target={checklist.rules.kpiRequired ? 1 : 0}
-                      passed={checklist.kpiPassed}
-                      subtext={
-                        checklist.rules.kpiRequired ? 'Required this week' : 'Not required'
-                      }
-                    />
                   </div>
 
                   <div
@@ -624,7 +605,7 @@ export default function AgentsRequirements() {
                     <SummaryBox
                       title="KPI"
                       value={agent.kpi.length}
-                      subtext="Open KPI totals by day, week, or month"
+                      subtext="Reference only"
                       onClick={() => openModal(agent.id, 'kpi')}
                     />
                   </div>
@@ -659,8 +640,7 @@ export default function AgentsRequirements() {
                 style={{ padding: 14, border: '1px solid rgba(255,255,255,0.08)' }}
               >
                 <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 10 }}>
-                  {videosView === 'weekly' ? `Week of ${formatDate(group.key)}` : formatDate(group.key)} ·{' '}
-                  {group.items.length}
+                  {videosView === 'weekly' ? `Week of ${formatDate(group.key)}` : formatDate(group.key)} · {group.items.length}
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -715,9 +695,7 @@ export default function AgentsRequirements() {
                 <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 10 }}>
                   {recordingsView === 'weekly'
                     ? `Week of ${formatDate(group.key)}`
-                    : recordingsView === 'monthly'
-                      ? formatDate(group.key)
-                      : formatDate(group.key)}{' '}
+                    : formatDate(group.key)}{' '}
                   · {group.items.length}
                 </div>
 
@@ -782,8 +760,7 @@ export default function AgentsRequirements() {
                 style={{ padding: 14, border: '1px solid rgba(255,255,255,0.08)' }}
               >
                 <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 10 }}>
-                  {proofsView === 'weekly' ? `Week of ${formatDate(group.key)}` : formatDate(group.key)} ·{' '}
-                  {group.items.length}
+                  {proofsView === 'weekly' ? `Week of ${formatDate(group.key)}` : formatDate(group.key)} · {group.items.length}
                 </div>
 
                 <div
