@@ -18,7 +18,7 @@ import Support from './pages/app/Support';
 
 import Overview from './pages/admin/Overview';
 import Agents from './pages/admin/Agents';
-import AgentRequirements from './pages/admin/AgentRequirements';
+import AgentsRequirements from './pages/admin/AgentsRequirements';
 import LeadsAdmin from './pages/admin/LeadsAdmin';
 import Tiers from './pages/admin/Tiers';
 import Distribution from './pages/admin/Distribution';
@@ -62,7 +62,7 @@ export default function App() {
         <Route index element={<Navigate to="/admin/overview" replace />} />
         <Route path="overview" element={<Overview />} />
         <Route path="agents" element={<Agents />} />
-        <Route path="agent-requirements" element={<AgentRequirements />} />
+        <Route path="agents-requirements" element={<AgentsRequirements />} />
         <Route path="leads" element={<LeadsAdmin />} />
         <Route path="tiers" element={<Tiers />} />
         <Route path="distribution" element={<Distribution />} />
