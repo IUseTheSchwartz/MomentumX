@@ -67,6 +67,83 @@ function matchesSearch(row, query) {
   return text.includes(query.toLowerCase());
 }
 
+function csvEscape(value) {
+  const stringValue = value == null ? '' : String(value);
+  return `"${stringValue.replace(/"/g, '""')}"`;
+}
+
+function buildCsv(rows) {
+  const headers = [
+    'First Name',
+    'Last Name',
+    'Phone',
+    'Email',
+    'Lead Type',
+    'Lead Category',
+    'Status',
+    'Called Today',
+    'Call Count',
+    'Do Not Call',
+    'Sit',
+    'Sale',
+    'AP Sold',
+    'Sale Date',
+    'Effective Date',
+    'Company Sold',
+    'Product Sold',
+    'Notes',
+    'Created At',
+    'Assigned At',
+    'Last Called At'
+  ];
+
+  const lines = [headers.map(csvEscape).join(',')];
+
+  for (const row of rows) {
+    const values = [
+      row.first_name || '',
+      row.last_name || '',
+      row.phone || '',
+      row.email || '',
+      row.lead_type || '',
+      row.lead_category || '',
+      row.status || '',
+      getVisibleCalledCount(row),
+      Number(row.call_count || 0),
+      row.do_not_call ? 'Yes' : 'No',
+      row.sit ? 'Yes' : 'No',
+      row.sale ? 'Yes' : 'No',
+      Number(row.ap_sold || 0),
+      row.sale_date || '',
+      row.effective_date || '',
+      row.company_sold || '',
+      row.product_sold || '',
+      row.notes || '',
+      row.created_at || '',
+      row.assigned_at || '',
+      row.last_called_at || ''
+    ];
+
+    lines.push(values.map(csvEscape).join(','));
+  }
+
+  return lines.join('\n');
+}
+
+function downloadCsv(filename, csvText) {
+  const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+
+  link.href = url;
+  link.setAttribute('download', filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  URL.revokeObjectURL(url);
+}
+
 export default function Leads() {
   const [rows, setRows] = useState([]);
   const [activeLead, setActiveLead] = useState(null);
@@ -77,6 +154,7 @@ export default function Leads() {
   const [saleError, setSaleError] = useState('');
   const [busyLeadId, setBusyLeadId] = useState(null);
   const [sessionUserId, setSessionUserId] = useState(null);
+  const [exportMessage, setExportMessage] = useState('');
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -437,6 +515,16 @@ export default function Leads() {
     }
   }
 
+  function exportVisibleLeadsCsv() {
+    const csvText = buildCsv(filteredRows);
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadCsv(`momentumx-leads-${stamp}.csv`, csvText);
+    setExportMessage(`Exported ${filteredRows.length} lead${filteredRows.length === 1 ? '' : 's'} as CSV.`);
+    setTimeout(() => {
+      setExportMessage('');
+    }, 2500);
+  }
+
   const leadTypeOptions = useMemo(() => {
     return Array.from(new Set(rows.map((row) => row.lead_type).filter(Boolean))).sort();
   }, [rows]);
@@ -515,12 +603,27 @@ export default function Leads() {
               {savingRecording ? 'Saving...' : 'Stop'}
             </button>
           )}
+
+          <button
+            className="btn btn-ghost"
+            type="button"
+            onClick={exportVisibleLeadsCsv}
+            disabled={!filteredRows.length}
+          >
+            Download CSV
+          </button>
         </div>
       </div>
 
       {recordingStatus ? (
         <div className="glass" style={{ padding: 12, flexShrink: 0, marginBottom: 12 }}>
           {recordingStatus}
+        </div>
+      ) : null}
+
+      {exportMessage ? (
+        <div className="glass" style={{ padding: 12, flexShrink: 0, marginBottom: 12 }}>
+          {exportMessage}
         </div>
       ) : null}
 
