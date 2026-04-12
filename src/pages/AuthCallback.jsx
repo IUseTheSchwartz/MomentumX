@@ -1,3 +1,4 @@
+// src/pages/AuthCallback.jsx
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
@@ -6,43 +7,51 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForStableSession() {
-  const first = await supabase.auth.getSession();
-  if (first.data.session) return first.data.session;
+async function exchangeSessionFromUrlIfNeeded() {
+  const search = new URLSearchParams(window.location.search);
+  const code = search.get('code');
 
-  return new Promise((resolve) => {
-    let resolved = false;
+  if (!code) return null;
 
-    const finish = (session) => {
-      if (resolved) return;
-      resolved = true;
-      subscription?.unsubscribe();
-      clearTimeout(timeoutId);
-      resolve(session || null);
-    };
+  const { data, error } = await supabase.auth.exchangeCodeForSession(code);
 
+  if (error) {
+    return null;
+  }
+
+  return data.session || null;
+}
+
+async function waitForStableSession({ timeoutMs = 5000, intervalMs = 250 } = {}) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
     const {
-      data: { subscription }
-    } = supabase.auth.onAuthStateChange((event, session) => {
-      if (
-        session &&
-        (event === 'SIGNED_IN' ||
-          event === 'TOKEN_REFRESHED' ||
-          event === 'INITIAL_SESSION')
-      ) {
-        finish(session);
-      }
+      data: { session }
+    } = await supabase.auth.getSession();
 
-      if (!session && event === 'INITIAL_SESSION') {
-        finish(null);
-      }
-    });
+    if (session) return session;
 
-    const timeoutId = setTimeout(async () => {
-      const retry = await supabase.auth.getSession();
-      finish(retry.data.session || null);
-    }, 2500);
-  });
+    await delay(intervalMs);
+  }
+
+  return null;
+}
+
+async function waitForProviderToken({ timeoutMs = 3000, intervalMs = 200 } = {}) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const {
+      data: { session }
+    } = await supabase.auth.getSession();
+
+    if (session?.provider_token) return session;
+
+    await delay(intervalMs);
+  }
+
+  return null;
 }
 
 export default function AuthCallback() {
@@ -53,7 +62,13 @@ export default function AuthCallback() {
     let active = true;
 
     async function run() {
-      const session = await waitForStableSession();
+      setMessage('Completing login...');
+
+      await exchangeSessionFromUrlIfNeeded();
+
+      if (!active) return;
+
+      let session = await waitForStableSession();
 
       if (!active) return;
 
@@ -64,6 +79,16 @@ export default function AuthCallback() {
         }, 800);
         return;
       }
+
+      if (!session.provider_token) {
+        setMessage('Finalizing Discord access...');
+        const tokenReadySession = await waitForProviderToken();
+        if (tokenReadySession) {
+          session = tokenReadySession;
+        }
+      }
+
+      if (!active) return;
 
       const providerToken = session.provider_token;
 
@@ -117,8 +142,6 @@ export default function AuthCallback() {
         navigate('/ineligible', { replace: true });
         return;
       }
-
-      await delay(150);
 
       const {
         data: { session: refreshedSession }
