@@ -479,7 +479,7 @@ export default function Leads() {
       const storagePath = `${sessionUserId}/${fileName}`;
 
       const { error: uploadError } = await supabase.storage
-        .from('lead-recordings')
+        .from('recordings')
         .upload(storagePath, stoppedBlob, {
           cacheControl: '3600',
           upsert: false,
@@ -489,7 +489,7 @@ export default function Leads() {
       if (uploadError) throw uploadError;
 
       const { data: publicUrlData } = supabase.storage
-        .from('lead-recordings')
+        .from('recordings')
         .getPublicUrl(storagePath);
 
       const recordingUrl = publicUrlData?.publicUrl || null;
