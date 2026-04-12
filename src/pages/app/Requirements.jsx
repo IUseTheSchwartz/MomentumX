@@ -1,47 +1,273 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
+import { formatDate } from '../../lib/utils';
 
-function Section({ title, children }) {
-  return (
-    <div className="panel glass top-gap">
-      <h2>{title}</h2>
-      <div style={{ marginTop: 12 }}>{children}</div>
-    </div>
-  );
+function startOfWeek(dateValue = new Date()) {
+  const date = new Date(dateValue);
+  const day = date.getDay();
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+  date.setHours(0, 0, 0, 0);
+  date.setDate(diff);
+  return date;
 }
 
-function BulletList({ items }) {
-  return (
-    <ul style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 8 }}>
-      {items.map((item) => (
-        <li key={item}>{item}</li>
-      ))}
-    </ul>
+function endOfWeek(dateValue = new Date()) {
+  const date = startOfWeek(dateValue);
+  date.setDate(date.getDate() + 7);
+  return date;
+}
+
+function groupLabelForView(dateValue, view) {
+  const d = new Date(dateValue);
+
+  if (view === 'weekly') {
+    return startOfWeek(d).toISOString().slice(0, 10);
+  }
+
+  if (view === 'monthly') {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+  }
+
+  return d.toISOString().slice(0, 10);
+}
+
+function parseRequirementsJson(input) {
+  const raw = input && typeof input === 'object' ? input : {};
+  const checklist = Array.isArray(raw.checklist)
+    ? raw.checklist
+    : Array.isArray(raw.items)
+      ? raw.items
+      : [];
+
+  const requiredRecordingsPerWeek = Number(
+    raw.required_recordings_per_week ??
+    raw.recordings_per_week ??
+    raw.weekly_recordings_required ??
+    0
   );
+
+  const requiredVideoLinksPerWeek = Number(
+    raw.required_video_links_per_week ??
+    raw.videos_per_week ??
+    raw.weekly_videos_required ??
+    0
+  );
+
+  return {
+    checklist,
+    requiredRecordingsPerWeek: Number.isFinite(requiredRecordingsPerWeek)
+      ? requiredRecordingsPerWeek
+      : 0,
+    requiredVideoLinksPerWeek: Number.isFinite(requiredVideoLinksPerWeek)
+      ? requiredVideoLinksPerWeek
+      : 0
+  };
+}
+
+function getChecklistLabel(item, index) {
+  if (typeof item === 'string') return item;
+  if (item && typeof item === 'object') {
+    return item.label || item.title || item.name || `Requirement ${index + 1}`;
+  }
+  return `Requirement ${index + 1}`;
 }
 
 export default function Requirements() {
-  const [tier, setTier] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [sessionUserId, setSessionUserId] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [recordings, setRecordings] = useState([]);
+  const [kpiRows, setKpiRows] = useState([]);
+  const [links, setLinks] = useState([]);
+  const [view, setView] = useState('weekly');
+  const [form, setForm] = useState({
+    title: '',
+    url: '',
+    notes: ''
+  });
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
 
-  useEffect(() => {
-    async function load() {
-      const {
-        data: { session }
-      } = await supabase.auth.getSession();
+  async function load() {
+    setLoading(true);
+    setMessage('');
 
-      if (!session) return;
+    const {
+      data: { session }
+    } = await supabase.auth.getSession();
 
-      const { data } = await supabase
-        .from('profiles')
-        .select('tiers(*)')
-        .eq('id', session.user.id)
-        .single();
-
-      setTier(data?.tiers || null);
+    if (!session) {
+      setLoading(false);
+      return;
     }
 
+    setSessionUserId(session.user.id);
+
+    const weekStart = startOfWeek();
+    const weekEnd = endOfWeek();
+
+    const [
+      { data: profileRow },
+      { data: recordingRows },
+      { data: kpiEntryRows },
+      { data: linkRows }
+    ] = await Promise.all([
+      supabase
+        .from('profiles')
+        .select('*, tiers(id, name, requirements_json)')
+        .eq('id', session.user.id)
+        .maybeSingle(),
+      supabase
+        .from('lead_recordings')
+        .select('id, file_name, recording_url, created_at')
+        .eq('agent_id', session.user.id)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('kpi_entries')
+        .select('*')
+        .eq('agent_id', session.user.id)
+        .order('entry_date', { ascending: false }),
+      supabase
+        .from('agent_requirement_links')
+        .select('*')
+        .eq('agent_id', session.user.id)
+        .order('created_at', { ascending: false })
+    ]);
+
+    const currentWeekRecordings = (recordingRows || []).filter((row) => {
+      const createdAt = new Date(row.created_at);
+      return createdAt >= weekStart && createdAt < weekEnd;
+    });
+
+    setProfile(profileRow || null);
+    setRecordings(currentWeekRecordings || []);
+    setKpiRows(kpiEntryRows || []);
+    setLinks(linkRows || []);
+    setLoading(false);
+  }
+
+  useEffect(() => {
     load();
   }, []);
+
+  const parsedRequirements = useMemo(() => {
+    return parseRequirementsJson(profile?.tiers?.requirements_json);
+  }, [profile]);
+
+  const groupedLinks = useMemo(() => {
+    return (links || []).map((row) => ({
+      ...row,
+      group_label: groupLabelForView(row.created_at, view)
+    }));
+  }, [links, view]);
+
+  const groupedKpi = useMemo(() => {
+    const map = new Map();
+
+    for (const row of kpiRows || []) {
+      const key = groupLabelForView(row.entry_date, view);
+
+      if (!map.has(key)) {
+        map.set(key, {
+          group_label: key,
+          dials: 0,
+          contacts: 0,
+          sits: 0,
+          sales: 0,
+          premium_submitted: 0,
+          ap_sold: 0
+        });
+      }
+
+      const current = map.get(key);
+      current.dials += Number(row.dials || 0);
+      current.contacts += Number(row.contacts || 0);
+      current.sits += Number(row.sits || 0);
+      current.sales += Number(row.sales || 0);
+      current.premium_submitted += Number(row.premium_submitted || 0);
+      current.ap_sold += Number(row.ap_sold || 0);
+    }
+
+    return Array.from(map.values()).sort((a, b) =>
+      b.group_label.localeCompare(a.group_label)
+    );
+  }, [kpiRows, view]);
+
+  const thisWeekCounts = useMemo(() => {
+    const weekStart = startOfWeek();
+    const weekEnd = endOfWeek();
+
+    const videoLinksThisWeek = (links || []).filter((row) => {
+      const createdAt = new Date(row.created_at);
+      return createdAt >= weekStart && createdAt < weekEnd;
+    }).length;
+
+    return {
+      recordings: recordings.length,
+      videoLinks: videoLinksThisWeek
+    };
+  }, [links, recordings]);
+
+  async function addLink(e) {
+    e.preventDefault();
+    if (!sessionUserId) return;
+
+    const cleanTitle = form.title.trim();
+    const cleanUrl = form.url.trim();
+    const cleanNotes = form.notes.trim();
+
+    if (!cleanTitle || !cleanUrl) {
+      setMessage('Title and link are required.');
+      return;
+    }
+
+    setSaving(true);
+    setMessage('');
+
+    const { error } = await supabase.from('agent_requirement_links').insert({
+      agent_id: sessionUserId,
+      title: cleanTitle,
+      url: cleanUrl,
+      notes: cleanNotes || null
+    });
+
+    if (error) {
+      setMessage(error.message || 'Could not save link.');
+      setSaving(false);
+      return;
+    }
+
+    setForm({
+      title: '',
+      url: '',
+      notes: ''
+    });
+
+    setMessage('Video link saved.');
+    setSaving(false);
+    load();
+  }
+
+  async function deleteLink(id) {
+    if (!id) return;
+
+    const { error } = await supabase
+      .from('agent_requirement_links')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      setMessage(error.message || 'Could not delete link.');
+      return;
+    }
+
+    setMessage('Video link removed.');
+    load();
+  }
+
+  if (loading) {
+    return <div className="page-center">Loading requirement checklist...</div>;
+  }
 
   return (
     <div
@@ -56,208 +282,271 @@ export default function Requirements() {
     >
       <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
-          <h1>Requirements</h1>
-          <p>MomentumX Team Lead System and expectations.</p>
+          <h1>Requirement Checklist</h1>
+          <p>
+            Tier requirements, weekly progress, submitted links, recordings, and KPI in one place.
+          </p>
         </div>
       </div>
 
       <div
+        className="grid grid-4"
+        style={{ flexShrink: 0 }}
+      >
+        <div className="glass" style={{ padding: 16 }}>
+          <div style={{ fontSize: 13, opacity: 0.75 }}>Current Tier</div>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>
+            {profile?.tiers?.name || 'No Tier'}
+          </div>
+        </div>
+
+        <div className="glass" style={{ padding: 16 }}>
+          <div style={{ fontSize: 13, opacity: 0.75 }}>Weekly Recordings</div>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>
+            {thisWeekCounts.recordings} / {parsedRequirements.requiredRecordingsPerWeek || 0}
+          </div>
+        </div>
+
+        <div className="glass" style={{ padding: 16 }}>
+          <div style={{ fontSize: 13, opacity: 0.75 }}>Weekly Video Links</div>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>
+            {thisWeekCounts.videoLinks} / {parsedRequirements.requiredVideoLinksPerWeek || 0}
+          </div>
+        </div>
+
+        <div className="glass" style={{ padding: 16 }}>
+          <div style={{ fontSize: 13, opacity: 0.75 }}>Checklist Items</div>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>
+            {parsedRequirements.checklist.length}
+          </div>
+        </div>
+      </div>
+
+      <div className="top-gap glass" style={{ padding: 16, flexShrink: 0 }}>
+        <h2 style={{ marginTop: 0 }}>Tier Checklist</h2>
+
+        {parsedRequirements.checklist.length ? (
+          <div style={{ display: 'grid', gap: 10 }}>
+            {parsedRequirements.checklist.map((item, index) => (
+              <div
+                key={`${getChecklistLabel(item, index)}-${index}`}
+                style={{
+                  padding: 12,
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 12
+                }}
+              >
+                {getChecklistLabel(item, index)}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div>No checklist items set on this tier yet.</div>
+        )}
+      </div>
+
+      <div
+        className="top-gap"
         style={{
           flex: 1,
           minHeight: 0,
           overflow: 'auto',
-          paddingRight: 4
+          display: 'grid',
+          gridTemplateColumns: '1.2fr 1fr',
+          gap: 16
         }}
       >
-        <div className="panel glass">
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-            <div>
-              <h2 style={{ marginBottom: 8 }}>MOMENTUMX TEAM LEAD SYSTEM</h2>
-              <p style={{ margin: 0 }}>
-                Leads, systems, and opportunities are earned through performance.
-              </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}>
+          <div className="glass" style={{ padding: 16 }}>
+            <h2 style={{ marginTop: 0 }}>Submit Required Video Link</h2>
+
+            <form onSubmit={addLink} style={{ display: 'grid', gap: 10 }}>
+              <label>
+                Title
+                <input
+                  value={form.title}
+                  onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
+                  placeholder="Example: Objection handling video"
+                />
+              </label>
+
+              <label>
+                URL
+                <input
+                  value={form.url}
+                  onChange={(e) => setForm((prev) => ({ ...prev, url: e.target.value }))}
+                  placeholder="https://..."
+                />
+              </label>
+
+              <label>
+                Notes
+                <textarea
+                  rows="3"
+                  value={form.notes}
+                  onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))}
+                  placeholder="Optional note"
+                />
+              </label>
+
+              {message ? (
+                <div style={{ fontSize: 14, opacity: 0.85 }}>{message}</div>
+              ) : null}
+
+              <button type="submit" className="btn btn-primary" disabled={saving}>
+                {saving ? 'Saving...' : 'Save Link'}
+              </button>
+            </form>
+          </div>
+
+          <div className="glass" style={{ padding: 16, minHeight: 0 }}>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: 12,
+                alignItems: 'center',
+                marginBottom: 12
+              }}
+            >
+              <h2 style={{ margin: 0 }}>Submitted Video Links</h2>
+
+              <div className="segmented">
+                <button
+                  className={view === 'daily' ? 'seg-btn active' : 'seg-btn'}
+                  onClick={() => setView('daily')}
+                  type="button"
+                >
+                  Daily
+                </button>
+                <button
+                  className={view === 'weekly' ? 'seg-btn active' : 'seg-btn'}
+                  onClick={() => setView('weekly')}
+                  type="button"
+                >
+                  Weekly
+                </button>
+                <button
+                  className={view === 'monthly' ? 'seg-btn active' : 'seg-btn'}
+                  onClick={() => setView('monthly')}
+                  type="button"
+                >
+                  Monthly
+                </button>
+              </div>
             </div>
 
-            <div className="pill" style={{ alignSelf: 'flex-start' }}>
-              Current Tier: {tier?.name || 'No Tier'}
+            <div style={{ display: 'grid', gap: 12 }}>
+              {groupedLinks.length ? (
+                groupedLinks.map((row) => (
+                  <div
+                    key={row.id}
+                    style={{
+                      padding: 12,
+                      border: '1px solid rgba(255,255,255,0.08)',
+                      borderRadius: 12
+                    }}
+                  >
+                    <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>
+                      {view === 'daily' ? 'Day' : view === 'weekly' ? 'Week' : 'Month'}:{' '}
+                      {formatDate(row.group_label)}
+                    </div>
+                    <div style={{ fontWeight: 700 }}>{row.title}</div>
+                    <div style={{ marginTop: 6 }}>
+                      <a href={row.url} target="_blank" rel="noreferrer">
+                        Open link
+                      </a>
+                    </div>
+                    {row.notes ? (
+                      <div style={{ marginTop: 8, opacity: 0.85 }}>{row.notes}</div>
+                    ) : null}
+                    <div style={{ marginTop: 8, fontSize: 12, opacity: 0.65 }}>
+                      Added {formatDate(row.created_at)}
+                    </div>
+                    <div style={{ marginTop: 10 }}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-small"
+                        onClick={() => deleteLink(row.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div>No submitted links yet.</div>
+              )}
             </div>
           </div>
         </div>
 
-        <Section title="Purpose">
-          <p>We are scaling fast with a large volume of high-quality leads.</p>
-          <BulletList
-            items={[
-              'Get new agents producing quickly',
-              'Reward performance',
-              'Scale top producers',
-              'Maximize every lead opportunity',
-              'You keep your full commission',
-              'Leads, systems, and opportunities are earned through performance'
-            ]}
-          />
-        </Section>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}>
+          <div className="glass" style={{ padding: 16 }}>
+            <h2 style={{ marginTop: 0 }}>This Week Recordings</h2>
 
-        <Section title="Tier System Overview">
-          <p>All tiers receive lead opportunities. Advancement after Tier 1 is based on performance, not time.</p>
-        </Section>
+            <div style={{ display: 'grid', gap: 10 }}>
+              {recordings.length ? (
+                recordings.map((row) => (
+                  <div
+                    key={row.id}
+                    style={{
+                      padding: 12,
+                      border: '1px solid rgba(255,255,255,0.08)',
+                      borderRadius: 12
+                    }}
+                  >
+                    <div style={{ fontWeight: 700 }}>{row.file_name || 'Recording'}</div>
+                    <div style={{ marginTop: 6 }}>
+                      <a href={row.recording_url} target="_blank" rel="noreferrer">
+                        Open recording
+                      </a>
+                    </div>
+                    <div style={{ marginTop: 8, fontSize: 12, opacity: 0.65 }}>
+                      {formatDate(row.created_at)}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div>No recordings saved this week.</div>
+              )}
+            </div>
+          </div>
 
-        <Section title="Tier 1: Foundation (First 30 Days)">
-          <p><strong>Leads Per Month:</strong></p>
-          <BulletList items={['500 aged leads']} />
+          <div className="glass" style={{ padding: 16, minHeight: 0 }}>
+            <h2 style={{ marginTop: 0 }}>KPI Summary</h2>
 
-          <p style={{ marginTop: 16 }}><strong>Requirements:</strong></p>
-          <BulletList
-            items={[
-              'Track ALL KPIs daily',
-              'Dials / Contacts',
-              'Close Rate',
-              'Premium Submitted',
-              'Record 2 sits per week and review them with your manager',
-              'Must attend all team meetings unless approved reason',
-              'Must dial unmuted no exceptions'
-            ]}
-          />
-
-          <p style={{ marginTop: 16 }}><strong>Focus:</strong></p>
-          <BulletList
-            items={[
-              'Build work ethic',
-              'Master activity',
-              'Learn the system'
-            ]}
-          />
-        </Section>
-
-        <Section title="Tier 2: Development (Proven Producers)">
-          <p><strong>Leads Per Month:</strong></p>
-          <BulletList items={['60 Fresh Leads', '500 Total Leads']} />
-
-          <p style={{ marginTop: 16 }}><strong>Additional Benefits:</strong></p>
-          <BulletList items={['Access to Dialer (once proven)']} />
-
-          <p style={{ marginTop: 16 }}><strong>Requirements:</strong></p>
-          <BulletList
-            items={[
-              'Track ALL KPIs',
-              'Maintain consistent performance',
-              'Record 1 sit per week and review it with your manager',
-              'Required to buy 1 to stay and 2 to advance fresh lead packs/month (Agent Lead Labs)',
-              '2 videos per week on Instagram'
-            ]}
-          />
-
-          <p style={{ marginTop: 16 }}><strong>Focus:</strong></p>
-          <BulletList
-            items={[
-              'Improve conversions',
-              'Increase close rate',
-              'Scale consistency'
-            ]}
-          />
-        </Section>
-
-        <Section title="Tier 3: Scale (Top Producers)">
-          <p><strong>Leads Per Month:</strong></p>
-          <BulletList items={['100 Fresh Leads', '600 Total Leads']} />
-
-          <p style={{ marginTop: 16 }}><strong>Requirements:</strong></p>
-          <BulletList
-            items={[
-              'Maintain high production',
-              'Required: Purchase 4 fresh lead packs/month (Agent Lead Labs)',
-              '2-3 videos on Instagram per week'
-            ]}
-          />
-
-          <p style={{ marginTop: 16 }}><strong>KPI Tracking:</strong></p>
-          <BulletList
-            items={[
-              'Not required unless production drops for 2 consecutive weeks',
-              'Then full KPI tracking resumes temporarily'
-            ]}
-          />
-
-          <p style={{ marginTop: 16 }}><strong>Focus:</strong></p>
-          <BulletList
-            items={[
-              'Maximize volume',
-              'Increase efficiency',
-              'Scale income'
-            ]}
-          />
-        </Section>
-
-        <Section title="Tier 2 → Tier 3 Promotion">
-          <p>Agents can qualify for Tier 3 through either of the following paths:</p>
-
-          <p><strong>Option 1: Monthly Production</strong></p>
-          <BulletList items={['Submit $45K+ in a single month']} />
-
-          <p style={{ marginTop: 16 }}><strong>Option 2: Weekly Consistency</strong></p>
-          <BulletList items={['Submit $12K+ per week for 2 consecutive weeks']} />
-
-          <p style={{ marginTop: 16 }}>
-            Tier 3 is reserved for agents who demonstrate consistent, reliable production.
-          </p>
-        </Section>
-
-        <Section title="Tier 3 Maintenance">
-          <BulletList
-            items={[
-              'Must NOT fall below $10K per week for 2 consecutive weeks',
-              'If this occurs, agent may be moved back to Tier 2',
-              'Full KPI tracking will resume until performance improves'
-            ]}
-          />
-        </Section>
-
-        <Section title="Promotion Rules (General)">
-          <BulletList
-            items={[
-              'Tier 1 = First 30 days in the business',
-              'Advancement is based on performance, not time (after Tier 1)',
-              'Leads follow production. Always.'
-            ]}
-          />
-        </Section>
-
-        <Section title="Accountability Rules">
-          <p>To continue receiving leads:</p>
-          <BulletList
-            items={[
-              'Leads must be worked immediately',
-              'No sitting on leads',
-              'Consistent activity is required',
-              'KPI tracking (Tier 1 & Tier 2) is mandatory'
-            ]}
-          />
-
-          <p style={{ marginTop: 16 }}>Failure to meet expectations may result in:</p>
-          <BulletList
-            items={[
-              'Reduced lead volume',
-              'Removal from lead program'
-            ]}
-          />
-        </Section>
-
-        <Section title="How You Win In This System">
-          <BulletList
-            items={[
-              'You keep 100% of your commissions',
-              'You earn more leads through performance',
-              'You scale your income by producing consistently',
-              'The more you produce, the more opportunity you receive'
-            ]}
-          />
-        </Section>
-
-        <Section title="Bottom Line">
-          <p style={{ fontWeight: 700, margin: 0 }}>
-            Produce → Earn More Leads → Scale Faster → Keep More Income
-          </p>
-        </Section>
+            <div style={{ display: 'grid', gap: 10 }}>
+              {groupedKpi.length ? (
+                groupedKpi.map((row) => (
+                  <div
+                    key={row.group_label}
+                    style={{
+                      padding: 12,
+                      border: '1px solid rgba(255,255,255,0.08)',
+                      borderRadius: 12
+                    }}
+                  >
+                    <div style={{ fontWeight: 700 }}>
+                      {view === 'daily' ? 'Day' : view === 'weekly' ? 'Week' : 'Month'}:{' '}
+                      {formatDate(row.group_label)}
+                    </div>
+                    <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
+                      <div>Dials: {row.dials}</div>
+                      <div>Contacts: {row.contacts}</div>
+                      <div>Sits: {row.sits}</div>
+                      <div>Sales: {row.sales}</div>
+                      <div>Premium: {Number(row.premium_submitted || 0).toLocaleString()}</div>
+                      <div>AP: {Number(row.ap_sold || 0).toLocaleString()}</div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div>No KPI entries yet.</div>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
