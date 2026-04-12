@@ -3,6 +3,8 @@ import { Navigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 
 const PROFILE_TIMEOUT_MS = 8000;
+const SESSION_BOOT_TIMEOUT_MS = 5000;
+const SESSION_BOOT_INTERVAL_MS = 250;
 
 function withTimeout(promise, ms) {
   return Promise.race([
@@ -11,6 +13,25 @@ function withTimeout(promise, ms) {
       setTimeout(() => resolve({ timedOut: true }), ms);
     })
   ]);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getStableSession() {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < SESSION_BOOT_TIMEOUT_MS) {
+    const {
+      data: { session }
+    } = await supabase.auth.getSession();
+
+    if (session) return session;
+    await sleep(SESSION_BOOT_INTERVAL_MS);
+  }
+
+  return null;
 }
 
 export default function AdminRoute({ children }) {
@@ -39,11 +60,7 @@ export default function AdminRoute({ children }) {
       setProfileLoading(true);
 
       const result = await withTimeout(
-        supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', nextSession.user.id)
-          .maybeSingle(),
+        supabase.from('profiles').select('*').eq('id', nextSession.user.id).maybeSingle(),
         PROFILE_TIMEOUT_MS
       );
 
@@ -74,14 +91,21 @@ export default function AdminRoute({ children }) {
       setProfileLoading(false);
     }
 
-    async function refreshFromSession({ keepPreviousOnFailure = true } = {}) {
+    async function refreshFromSession({ keepPreviousOnFailure = true, stable = false } = {}) {
       if (refreshInFlightRef.current) return;
       refreshInFlightRef.current = true;
 
       try {
-        const {
-          data: { session: currentSession }
-        } = await supabase.auth.getSession();
+        let currentSession = null;
+
+        if (stable) {
+          currentSession = await getStableSession();
+        } else {
+          const {
+            data: { session: fetchedSession }
+          } = await supabase.auth.getSession();
+          currentSession = fetchedSession ?? null;
+        }
 
         if (!mountedRef.current) return;
 
@@ -93,7 +117,7 @@ export default function AdminRoute({ children }) {
       }
     }
 
-    refreshFromSession({ keepPreviousOnFailure: false });
+    refreshFromSession({ keepPreviousOnFailure: false, stable: true });
 
     const {
       data: { subscription }
@@ -109,18 +133,37 @@ export default function AdminRoute({ children }) {
         return;
       }
 
+      if (
+        event === 'INITIAL_SESSION' ||
+        event === 'SIGNED_IN' ||
+        event === 'TOKEN_REFRESHED'
+      ) {
+        const stableSession = nextSession ?? (await getStableSession());
+
+        if (!mountedRef.current) return;
+
+        setSession(stableSession ?? null);
+        setAuthLoading(false);
+        await loadProfileForSession(stableSession ?? null, {
+          keepPreviousOnFailure: true
+        });
+        return;
+      }
+
       setSession(nextSession ?? null);
       setAuthLoading(false);
-      await loadProfileForSession(nextSession ?? null, { keepPreviousOnFailure: true });
+      await loadProfileForSession(nextSession ?? null, {
+        keepPreviousOnFailure: true
+      });
     });
 
     const handleVisible = async () => {
       if (document.visibilityState !== 'visible') return;
-      await refreshFromSession({ keepPreviousOnFailure: true });
+      await refreshFromSession({ keepPreviousOnFailure: true, stable: false });
     };
 
     const handleFocus = async () => {
-      await refreshFromSession({ keepPreviousOnFailure: true });
+      await refreshFromSession({ keepPreviousOnFailure: true, stable: false });
     };
 
     document.addEventListener('visibilitychange', handleVisible);
