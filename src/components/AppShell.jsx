@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 const agentLinks = [
   ['/app/dashboard', 'Dashboard'],
@@ -23,6 +23,17 @@ const adminLinks = [
   ['/admin/logs', 'Logs']
 ];
 
+const PROFILE_TIMEOUT_MS = 8000;
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => {
+      setTimeout(() => resolve({ timedOut: true }), ms);
+    })
+  ]);
+}
+
 export default function AppShell({ admin = false }) {
   const navigate = useNavigate();
   const links = admin ? adminLinks : agentLinks;
@@ -30,70 +41,109 @@ export default function AppShell({ admin = false }) {
   const [session, setSession] = useState(undefined);
   const [profile, setProfile] = useState(null);
 
-  useEffect(() => {
-    let mounted = true;
+  const mountedRef = useRef(true);
+  const lastProfileRef = useRef(null);
+  const refreshInFlightRef = useRef(false);
 
-    async function loadProfile(nextSession) {
-      if (!mounted) return;
+  useEffect(() => {
+    mountedRef.current = true;
+
+    async function loadProfileForSession(nextSession, { keepPreviousOnFailure = true } = {}) {
+      if (!mountedRef.current) return;
 
       if (!nextSession) {
+        lastProfileRef.current = null;
         setProfile(null);
         return;
       }
 
-      const { data } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', nextSession.user.id)
-        .maybeSingle();
+      const result = await withTimeout(
+        supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', nextSession.user.id)
+          .maybeSingle(),
+        PROFILE_TIMEOUT_MS
+      );
 
-      if (!mounted) return;
-      setProfile(data || null);
+      if (!mountedRef.current) return;
+
+      if (result?.timedOut) {
+        if (keepPreviousOnFailure && lastProfileRef.current) {
+          setProfile(lastProfileRef.current);
+        }
+        return;
+      }
+
+      const { data, error } = result;
+
+      if (error) {
+        if (keepPreviousOnFailure && lastProfileRef.current) {
+          setProfile(lastProfileRef.current);
+        } else {
+          setProfile(null);
+        }
+        return;
+      }
+
+      const safeProfile = data || null;
+      lastProfileRef.current = safeProfile;
+      setProfile(safeProfile);
     }
 
-    async function refreshFromSession() {
-      const {
-        data: { session: currentSession }
-      } = await supabase.auth.getSession();
+    async function refreshFromSession({ keepPreviousOnFailure = true } = {}) {
+      if (refreshInFlightRef.current) return;
+      refreshInFlightRef.current = true;
 
-      if (!mounted) return;
+      try {
+        const {
+          data: { session: currentSession }
+        } = await supabase.auth.getSession();
 
-      setSession(currentSession ?? null);
-      await loadProfile(currentSession ?? null);
+        if (!mountedRef.current) return;
+
+        setSession(currentSession ?? null);
+        await loadProfileForSession(currentSession ?? null, { keepPreviousOnFailure });
+      } finally {
+        refreshInFlightRef.current = false;
+      }
     }
 
-    async function init() {
-      await refreshFromSession();
-    }
-
-    init();
+    refreshFromSession({ keepPreviousOnFailure: false });
 
     const {
       data: { subscription }
-    } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
-      if (!mounted) return;
+    } = supabase.auth.onAuthStateChange(async (event, nextSession) => {
+      if (!mountedRef.current) return;
+
+      if (event === 'SIGNED_OUT') {
+        lastProfileRef.current = null;
+        setSession(null);
+        setProfile(null);
+        return;
+      }
 
       setSession(nextSession ?? null);
-      await loadProfile(nextSession ?? null);
+      await loadProfileForSession(nextSession ?? null, { keepPreviousOnFailure: true });
     });
 
-    async function handleVisibilityWake() {
+    const handleVisible = async () => {
       if (document.visibilityState !== 'visible') return;
-      await refreshFromSession();
-    }
+      await refreshFromSession({ keepPreviousOnFailure: true });
+    };
 
-    async function handleWindowFocus() {
-      await refreshFromSession();
-    }
+    const handleFocus = async () => {
+      await refreshFromSession({ keepPreviousOnFailure: true });
+    };
 
-    document.addEventListener('visibilitychange', handleVisibilityWake);
-    window.addEventListener('focus', handleWindowFocus);
+    document.addEventListener('visibilitychange', handleVisible);
+    window.addEventListener('focus', handleFocus);
 
     return () => {
-      mounted = false;
+      mountedRef.current = false;
       subscription.unsubscribe();
-      document.removeEventListener('visibilitychange', handleVisibilityWake);
-      window.removeEventListener('focus', handleWindowFocus);
+      document.removeEventListener('visibilitychange', handleVisible);
+      window.removeEventListener('focus', handleFocus);
     };
   }, []);
 
@@ -107,7 +157,10 @@ export default function AppShell({ admin = false }) {
 
     if (admin) {
       navigate('/app/dashboard');
-    } else if (profile?.is_admin) {
+      return;
+    }
+
+    if (profile?.is_admin) {
       navigate('/admin/overview');
     }
   }
