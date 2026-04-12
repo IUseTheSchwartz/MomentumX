@@ -10,25 +10,116 @@ function getLocalDateKey(value) {
   ).padStart(2, '0')}`;
 }
 
-function getWeekKey(value) {
+function getWeekStart(value = new Date()) {
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'Unknown';
+  const day = date.getDay();
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+  date.setDate(diff);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
 
-  const copy = new Date(date);
-  const day = copy.getDay();
-  const diff = copy.getDate() - day + (day === 0 ? -6 : 1);
-  copy.setDate(diff);
-  copy.setHours(0, 0, 0, 0);
-
-  return `${copy.getFullYear()}-${String(copy.getMonth() + 1).padStart(2, '0')}-${String(
-    copy.getDate()
+function getWeekKey(value) {
+  const date = getWeekStart(value);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
+    date.getDate()
   ).padStart(2, '0')}`;
+}
+
+function getMonthStart(value = new Date()) {
+  return new Date(value.getFullYear(), value.getMonth(), 1);
 }
 
 function getMonthKey(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'Unknown';
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-01`;
+}
+
+function isOnOrAfter(value, floorDate) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  return date >= floorDate;
+}
+
+function countSince(rows, floorDate, field = 'created_at') {
+  return (rows || []).filter((row) => isOnOrAfter(row[field], floorDate)).length;
+}
+
+function getTierRules(tierName) {
+  const normalized = String(tierName || '').toLowerCase();
+
+  if (normalized.includes('tier 1')) {
+    return {
+      recordingsWeekly: 2,
+      videosWeekly: 0,
+      leadPacksMonthlyStay: 0,
+      leadPacksMonthlyAdvance: 0,
+      kpiRequired: true
+    };
+  }
+
+  if (normalized.includes('tier 2')) {
+    return {
+      recordingsWeekly: 1,
+      videosWeekly: 2,
+      leadPacksMonthlyStay: 1,
+      leadPacksMonthlyAdvance: 2,
+      kpiRequired: false
+    };
+  }
+
+  if (normalized.includes('tier 3')) {
+    return {
+      recordingsWeekly: 0,
+      videosWeekly: 0,
+      leadPacksMonthlyStay: 4,
+      leadPacksMonthlyAdvance: 0,
+      kpiRequired: false
+    };
+  }
+
+  return {
+    recordingsWeekly: 0,
+    videosWeekly: 0,
+    leadPacksMonthlyStay: 0,
+    leadPacksMonthlyAdvance: 0,
+    kpiRequired: false
+  };
+}
+
+function buildChecklist(agent) {
+  const weekStart = getWeekStart();
+  const monthStart = getMonthStart(new Date());
+  const rules = getTierRules(agent.tierName);
+
+  const recordingsThisWeek = countSince(agent.recordings, weekStart);
+  const videosThisWeek = countSince(agent.videos, weekStart);
+  const proofsThisMonth = countSince(agent.proofs, monthStart);
+  const hasKpiThisWeek = (agent.kpi || []).some((row) => {
+    const sourceDate = row.entry_date || row.created_at;
+    return isOnOrAfter(sourceDate, weekStart);
+  });
+
+  return {
+    rules,
+    recordingsThisWeek,
+    videosThisWeek,
+    proofsThisMonth,
+    hasKpiThisWeek,
+    recordingsPassed:
+      rules.recordingsWeekly === 0 ? true : recordingsThisWeek >= rules.recordingsWeekly,
+    videosPassed: rules.videosWeekly === 0 ? true : videosThisWeek >= rules.videosWeekly,
+    leadStayPassed:
+      rules.leadPacksMonthlyStay === 0
+        ? true
+        : proofsThisMonth >= rules.leadPacksMonthlyStay,
+    leadAdvancePassed:
+      rules.leadPacksMonthlyAdvance === 0
+        ? true
+        : proofsThisMonth >= rules.leadPacksMonthlyAdvance,
+    kpiPassed: rules.kpiRequired ? hasKpiThisWeek : true
+  };
 }
 
 function groupRecordings(rows, view) {
@@ -57,6 +148,26 @@ function groupRecordings(rows, view) {
 }
 
 function groupVideos(rows, view) {
+  const grouped = new Map();
+
+  for (const row of rows || []) {
+    const key = view === 'weekly' ? getWeekKey(row.created_at) : getMonthKey(row.created_at);
+
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(row);
+  }
+
+  return Array.from(grouped.entries())
+    .sort((a, b) => String(b[0]).localeCompare(String(a[0])))
+    .map(([key, items]) => ({
+      key,
+      items: items.sort(
+        (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+      )
+    }));
+}
+
+function groupProofs(rows, view) {
   const grouped = new Map();
 
   for (const row of rows || []) {
@@ -117,7 +228,7 @@ function groupKpi(rows, view) {
 function matchesSearch(agent, query) {
   if (!query) return true;
 
-  const text = [agent.display_name, agent.email]
+  const text = [agent.display_name, agent.email, agent.tierName]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
@@ -145,6 +256,29 @@ function SummaryBox({ title, value, subtext, onClick }) {
       <div style={{ fontSize: 26, fontWeight: 800, lineHeight: 1 }}>{value}</div>
       <div style={{ fontSize: 13, opacity: 0.75 }}>{subtext}</div>
     </button>
+  );
+}
+
+function ChecklistBadge({ label, current, target, passed, subtext }) {
+  const borderColor = passed ? 'rgba(16,185,129,0.45)' : 'rgba(239,68,68,0.45)';
+  const background = passed ? 'rgba(16,185,129,0.10)' : 'rgba(239,68,68,0.10)';
+  const color = passed ? '#34d399' : '#f87171';
+
+  return (
+    <div
+      className="glass"
+      style={{
+        padding: 12,
+        border: `1px solid ${borderColor}`,
+        background
+      }}
+    >
+      <div style={{ fontSize: 13, opacity: 0.75 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 800, color, marginTop: 4 }}>
+        {target > 0 ? `${current} / ${target}` : passed ? 'Passed' : 'Failed'}
+      </div>
+      {subtext ? <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>{subtext}</div> : null}
+    </div>
   );
 }
 
@@ -225,6 +359,7 @@ export default function AgentsRequirements() {
   const [activeModal, setActiveModal] = useState(null);
   const [recordingsView, setRecordingsView] = useState('weekly');
   const [videosView, setVideosView] = useState('weekly');
+  const [proofsView, setProofsView] = useState('monthly');
   const [kpiView, setKpiView] = useState('weekly');
 
   useEffect(() => {
@@ -234,20 +369,32 @@ export default function AgentsRequirements() {
   async function load() {
     setLoading(true);
 
-    const [{ data: profiles }, { data: recs }, { data: vids }, { data: kpi }] = await Promise.all([
-      supabase.from('profiles').select('id, display_name, email').order('display_name'),
+    const [
+      { data: profiles },
+      { data: recs },
+      { data: vids },
+      { data: proofs },
+      { data: kpi }
+    ] = await Promise.all([
+      supabase
+        .from('profiles')
+        .select('id, display_name, email, tiers(id, name)')
+        .order('display_name'),
       supabase
         .from('lead_recordings')
         .select('*, leads(first_name,last_name,phone)')
         .order('created_at', { ascending: false }),
       supabase.from('agent_videos').select('*').order('created_at', { ascending: false }),
+      supabase.from('lead_pack_proofs').select('*').order('created_at', { ascending: false }),
       supabase.from('kpi_entries').select('*').order('entry_date', { ascending: false })
     ]);
 
     const grouped = (profiles || []).map((agent) => ({
       ...agent,
+      tierName: agent.tiers?.name || 'No Tier',
       recordings: (recs || []).filter((r) => r.agent_id === agent.id),
       videos: (vids || []).filter((v) => v.agent_id === agent.id),
+      proofs: (proofs || []).filter((p) => p.agent_id === agent.id),
       kpi: (kpi || []).filter((k) => k.agent_id === agent.id)
     }));
 
@@ -273,6 +420,11 @@ export default function AgentsRequirements() {
     if (!selectedAgent || activeModal?.type !== 'videos') return [];
     return groupVideos(selectedAgent.videos, videosView);
   }, [selectedAgent, activeModal, videosView]);
+
+  const groupedProofs = useMemo(() => {
+    if (!selectedAgent || activeModal?.type !== 'proofs') return [];
+    return groupProofs(selectedAgent.proofs, proofsView);
+  }, [selectedAgent, activeModal, proofsView]);
 
   const groupedKpiRows = useMemo(() => {
     if (!selectedAgent || activeModal?.type !== 'kpi') return [];
@@ -301,7 +453,7 @@ export default function AgentsRequirements() {
       <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
           <h1>Agent Requirements</h1>
-          <p>Open each agent, then drill into videos, recordings, and KPI in separate views.</p>
+          <p>Checklist status, recordings, videos, KPI, and lead pack proofs for every agent.</p>
         </div>
       </div>
 
@@ -311,7 +463,7 @@ export default function AgentsRequirements() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Agent name or email..."
+            placeholder="Agent name, email, or tier..."
           />
         </label>
       </div>
@@ -341,6 +493,7 @@ export default function AgentsRequirements() {
 
         {filteredAgents.map((agent) => {
           const expanded = expandedAgentId === agent.id;
+          const checklist = buildChecklist(agent);
 
           return (
             <div
@@ -364,7 +517,9 @@ export default function AgentsRequirements() {
                   <div style={{ fontSize: 20, fontWeight: 800 }}>
                     {agent.display_name || 'Unnamed Agent'}
                   </div>
-                  <div style={{ opacity: 0.75, fontSize: 14 }}>{agent.email || 'No email'}</div>
+                  <div style={{ opacity: 0.75, fontSize: 14 }}>
+                    {agent.email || 'No email'} · {agent.tierName}
+                  </div>
                 </div>
 
                 <button
@@ -377,35 +532,103 @@ export default function AgentsRequirements() {
               </div>
 
               {expanded ? (
-                <div
-                  className="top-gap"
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-                    gap: 12
-                  }}
-                >
-                  <SummaryBox
-                    title="Videos"
-                    value={agent.videos.length}
-                    subtext="Open reels by week or month"
-                    onClick={() => openModal(agent.id, 'videos')}
-                  />
+                <>
+                  <div
+                    className="top-gap"
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                      gap: 12
+                    }}
+                  >
+                    {checklist.rules.recordingsWeekly > 0 ? (
+                      <ChecklistBadge
+                        label="Recordings"
+                        current={checklist.recordingsThisWeek}
+                        target={checklist.rules.recordingsWeekly}
+                        passed={checklist.recordingsPassed}
+                        subtext="This week"
+                      />
+                    ) : null}
 
-                  <SummaryBox
-                    title="Recordings"
-                    value={agent.recordings.length}
-                    subtext="Open recordings by day, week, or month"
-                    onClick={() => openModal(agent.id, 'recordings')}
-                  />
+                    {checklist.rules.videosWeekly > 0 ? (
+                      <ChecklistBadge
+                        label="Videos"
+                        current={checklist.videosThisWeek}
+                        target={checklist.rules.videosWeekly}
+                        passed={checklist.videosPassed}
+                        subtext="This week"
+                      />
+                    ) : null}
 
-                  <SummaryBox
-                    title="KPI"
-                    value={agent.kpi.length}
-                    subtext="Open KPI totals by day, week, or month"
-                    onClick={() => openModal(agent.id, 'kpi')}
-                  />
-                </div>
+                    {checklist.rules.leadPacksMonthlyStay > 0 ? (
+                      <ChecklistBadge
+                        label="Lead Packs"
+                        current={checklist.proofsThisMonth}
+                        target={checklist.rules.leadPacksMonthlyStay}
+                        passed={checklist.leadStayPassed}
+                        subtext="This month to stay"
+                      />
+                    ) : null}
+
+                    {checklist.rules.leadPacksMonthlyAdvance > 0 ? (
+                      <ChecklistBadge
+                        label="Advance"
+                        current={checklist.proofsThisMonth}
+                        target={checklist.rules.leadPacksMonthlyAdvance}
+                        passed={checklist.leadAdvancePassed}
+                        subtext="This month to advance"
+                      />
+                    ) : null}
+
+                    <ChecklistBadge
+                      label="KPI Tracking"
+                      current={checklist.hasKpiThisWeek ? 1 : 0}
+                      target={checklist.rules.kpiRequired ? 1 : 0}
+                      passed={checklist.kpiPassed}
+                      subtext={
+                        checklist.rules.kpiRequired ? 'Required this week' : 'Not required'
+                      }
+                    />
+                  </div>
+
+                  <div
+                    className="top-gap"
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                      gap: 12
+                    }}
+                  >
+                    <SummaryBox
+                      title="Videos"
+                      value={agent.videos.length}
+                      subtext="Open reels by week or month"
+                      onClick={() => openModal(agent.id, 'videos')}
+                    />
+
+                    <SummaryBox
+                      title="Recordings"
+                      value={agent.recordings.length}
+                      subtext="Open recordings by day, week, or month"
+                      onClick={() => openModal(agent.id, 'recordings')}
+                    />
+
+                    <SummaryBox
+                      title="Lead Pack Proofs"
+                      value={agent.proofs.length}
+                      subtext="Open uploaded screenshots"
+                      onClick={() => openModal(agent.id, 'proofs')}
+                    />
+
+                    <SummaryBox
+                      title="KPI"
+                      value={agent.kpi.length}
+                      subtext="Open KPI totals by day, week, or month"
+                      onClick={() => openModal(agent.id, 'kpi')}
+                    />
+                  </div>
+                </>
               ) : null}
             </div>
           );
@@ -528,6 +751,78 @@ export default function AgentsRequirements() {
                       </div>
                     );
                   })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={activeModal?.type === 'proofs' && !!selectedAgent}
+        title={`${selectedAgent?.display_name || 'Agent'} · Lead Pack Proofs`}
+        onClose={closeModal}
+        controls={
+          <select value={proofsView} onChange={(e) => setProofsView(e.target.value)}>
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+          </select>
+        }
+      >
+        {!groupedProofs.length ? (
+          <div className="glass" style={{ padding: 14 }}>
+            No lead pack proofs found.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {groupedProofs.map((group) => (
+              <div
+                key={group.key}
+                className="glass"
+                style={{ padding: 14, border: '1px solid rgba(255,255,255,0.08)' }}
+              >
+                <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 10 }}>
+                  {proofsView === 'weekly' ? `Week of ${formatDate(group.key)}` : formatDate(group.key)} ·{' '}
+                  {group.items.length}
+                </div>
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                    gap: 12
+                  }}
+                >
+                  {group.items.map((item) => (
+                    <a
+                      key={item.id}
+                      href={item.image_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="glass"
+                      style={{
+                        padding: 10,
+                        textDecoration: 'none',
+                        color: 'inherit',
+                        border: '1px solid rgba(255,255,255,0.08)'
+                      }}
+                    >
+                      <img
+                        src={item.image_url}
+                        alt="Lead pack proof"
+                        style={{
+                          width: '100%',
+                          height: 180,
+                          objectFit: 'cover',
+                          borderRadius: 10,
+                          marginBottom: 8
+                        }}
+                      />
+                      <div style={{ fontSize: 13, opacity: 0.75 }}>
+                        Uploaded {formatDate(item.created_at)}
+                      </div>
+                    </a>
+                  ))}
                 </div>
               </div>
             ))}
