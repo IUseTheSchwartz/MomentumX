@@ -32,8 +32,7 @@ function getTierRules(tierName) {
       recordingsWeekly: 2,
       videosWeekly: 0,
       leadPacksMonthlyStay: 0,
-      leadPacksMonthlyAdvance: 0,
-      kpiRequired: true
+      leadPacksMonthlyAdvance: 0
     };
   }
 
@@ -42,8 +41,7 @@ function getTierRules(tierName) {
       recordingsWeekly: 1,
       videosWeekly: 2,
       leadPacksMonthlyStay: 1,
-      leadPacksMonthlyAdvance: 2,
-      kpiRequired: false
+      leadPacksMonthlyAdvance: 2
     };
   }
 
@@ -52,8 +50,7 @@ function getTierRules(tierName) {
       recordingsWeekly: 0,
       videosWeekly: 0,
       leadPacksMonthlyStay: 4,
-      leadPacksMonthlyAdvance: 0,
-      kpiRequired: false
+      leadPacksMonthlyAdvance: 0
     };
   }
 
@@ -61,13 +58,11 @@ function getTierRules(tierName) {
     recordingsWeekly: 0,
     videosWeekly: 0,
     leadPacksMonthlyStay: 0,
-    leadPacksMonthlyAdvance: 0,
-    kpiRequired: false
+    leadPacksMonthlyAdvance: 0
   };
 }
 
 function ChecklistItem({ label, current, target, passed, subtext }) {
-  const active = target > 0 || label.toLowerCase().includes('kpi');
   const borderColor = passed ? 'rgba(16,185,129,0.45)' : 'rgba(239,68,68,0.45)';
   const background = passed ? 'rgba(16,185,129,0.10)' : 'rgba(239,68,68,0.10)';
   const color = passed ? '#34d399' : '#f87171';
@@ -78,13 +73,12 @@ function ChecklistItem({ label, current, target, passed, subtext }) {
       style={{
         padding: 14,
         border: `1px solid ${borderColor}`,
-        background,
-        opacity: active ? 1 : 0.65
+        background
       }}
     >
       <div style={{ fontSize: 14, opacity: 0.75 }}>{label}</div>
       <div style={{ fontSize: 26, fontWeight: 800, color, marginTop: 4 }}>
-        {target > 0 ? `${current} / ${target}` : passed ? 'Passed' : 'Failed'}
+        {current} / {target}
       </div>
       {subtext ? (
         <div style={{ fontSize: 13, opacity: 0.8, marginTop: 6 }}>{subtext}</div>
@@ -98,7 +92,6 @@ export default function Requirements() {
   const [tier, setTier] = useState(null);
   const [recordings, setRecordings] = useState([]);
   const [videos, setVideos] = useState([]);
-  const [kpiRows, setKpiRows] = useState([]);
   const [proofs, setProofs] = useState([]);
 
   const [showSystem, setShowSystem] = useState(false);
@@ -108,7 +101,7 @@ export default function Requirements() {
 
   const [proofFile, setProofFile] = useState(null);
   const [proofPreview, setProofPreview] = useState('');
-  const pasteZoneRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   async function load() {
     const {
@@ -121,7 +114,6 @@ export default function Requirements() {
       { data: profileData },
       { data: recs },
       { data: vids },
-      { data: kpi },
       { data: proofRows }
     ] = await Promise.all([
       supabase
@@ -140,11 +132,6 @@ export default function Requirements() {
         .eq('agent_id', session.user.id)
         .order('created_at', { ascending: false }),
       supabase
-        .from('kpi_entries')
-        .select('*')
-        .eq('agent_id', session.user.id)
-        .order('entry_date', { ascending: false }),
-      supabase
         .from('lead_pack_proofs')
         .select('*')
         .eq('agent_id', session.user.id)
@@ -155,7 +142,6 @@ export default function Requirements() {
     setTier(profileData?.tiers || null);
     setRecordings(recs || []);
     setVideos(vids || []);
-    setKpiRows(kpi || []);
     setProofs(proofRows || []);
   }
 
@@ -163,29 +149,21 @@ export default function Requirements() {
     load();
   }, []);
 
-  const tierRules = useMemo(() => getTierRules(tier?.name), [tier]);
+  useEffect(() => {
+    return () => {
+      if (proofPreview) {
+        URL.revokeObjectURL(proofPreview);
+      }
+    };
+  }, [proofPreview]);
 
+  const tierRules = useMemo(() => getTierRules(tier?.name), [tier]);
   const weekStart = useMemo(() => startOfWeek(), []);
   const monthStart = useMemo(() => startOfMonth(new Date()), []);
 
-  const recordingsThisWeek = useMemo(() => {
-    return countSince(recordings, weekStart);
-  }, [recordings, weekStart]);
-
-  const videosThisWeek = useMemo(() => {
-    return countSince(videos, weekStart);
-  }, [videos, weekStart]);
-
-  const proofsThisMonth = useMemo(() => {
-    return countSince(proofs, monthStart);
-  }, [proofs, monthStart]);
-
-  const hasKpiThisWeek = useMemo(() => {
-    return (kpiRows || []).some((row) => {
-      const sourceDate = row.entry_date || row.created_at;
-      return isOnOrAfter(sourceDate, weekStart);
-    });
-  }, [kpiRows, weekStart]);
+  const recordingsThisWeek = useMemo(() => countSince(recordings, weekStart), [recordings, weekStart]);
+  const videosThisWeek = useMemo(() => countSince(videos, weekStart), [videos, weekStart]);
+  const proofsThisMonth = useMemo(() => countSince(proofs, monthStart), [proofs, monthStart]);
 
   const checklist = useMemo(() => {
     return {
@@ -194,7 +172,9 @@ export default function Requirements() {
           ? true
           : recordingsThisWeek >= tierRules.recordingsWeekly,
       videosPassed:
-        tierRules.videosWeekly === 0 ? true : videosThisWeek >= tierRules.videosWeekly,
+        tierRules.videosWeekly === 0
+          ? true
+          : videosThisWeek >= tierRules.videosWeekly,
       leadStayPassed:
         tierRules.leadPacksMonthlyStay === 0
           ? true
@@ -202,16 +182,9 @@ export default function Requirements() {
       leadAdvancePassed:
         tierRules.leadPacksMonthlyAdvance === 0
           ? true
-          : proofsThisMonth >= tierRules.leadPacksMonthlyAdvance,
-      kpiPassed: tierRules.kpiRequired ? hasKpiThisWeek : true
+          : proofsThisMonth >= tierRules.leadPacksMonthlyAdvance
     };
-  }, [
-    tierRules,
-    recordingsThisWeek,
-    videosThisWeek,
-    proofsThisMonth,
-    hasKpiThisWeek
-  ]);
+  }, [tierRules, recordingsThisWeek, videosThisWeek, proofsThisMonth]);
 
   async function addVideo(e) {
     e.preventDefault();
@@ -220,7 +193,6 @@ export default function Requirements() {
 
     try {
       const url = e.target.url.value?.trim();
-
       if (!url) return;
 
       const {
@@ -250,31 +222,41 @@ export default function Requirements() {
     }
   }
 
-  function handleProofFileChange(e) {
-    const file = e.target.files?.[0] || null;
-    setProofFile(file);
+  function setNextProofFile(file) {
+    if (!file) return;
 
-    if (!file) {
-      setProofPreview('');
-      return;
+    if (proofPreview) {
+      URL.revokeObjectURL(proofPreview);
     }
 
-    const nextPreview = URL.createObjectURL(file);
-    setProofPreview(nextPreview);
+    setProofFile(file);
+    setProofPreview(URL.createObjectURL(file));
+  }
+
+  function handleProofFileChange(e) {
+    const file = e.target.files?.[0] || null;
+    if (!file) return;
+    setNextProofFile(file);
+    setStatusMessage('');
   }
 
   function handlePasteProof(e) {
+    e.preventDefault();
+
     const items = Array.from(e.clipboardData?.items || []);
     const imageItem = items.find((item) => item.type.startsWith('image/'));
-
-    if (!imageItem) return;
+    if (!imageItem) {
+      setStatusMessage('No image found in clipboard.');
+      return;
+    }
 
     const file = imageItem.getAsFile();
-    if (!file) return;
+    if (!file) {
+      setStatusMessage('Could not read pasted image.');
+      return;
+    }
 
-    setProofFile(file);
-    const nextPreview = URL.createObjectURL(file);
-    setProofPreview(nextPreview);
+    setNextProofFile(file);
     setStatusMessage('Pasted screenshot ready to upload.');
   }
 
@@ -324,10 +306,14 @@ export default function Requirements() {
 
       if (insertError) throw insertError;
 
+      if (proofPreview) {
+        URL.revokeObjectURL(proofPreview);
+      }
+
       setProofFile(null);
       setProofPreview('');
-      if (pasteZoneRef.current) {
-        pasteZoneRef.current.textContent = '';
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
       }
 
       setStatusMessage('Lead pack proof uploaded.');
@@ -442,31 +428,6 @@ export default function Requirements() {
                 subtext="Monthly target to advance"
               />
             ) : null}
-
-            {tierRules.kpiRequired ? (
-              <ChecklistItem
-                label="KPI Tracking"
-                current={hasKpiThisWeek ? 1 : 0}
-                target={1}
-                passed={checklist.kpiPassed}
-                subtext="At least one KPI entry this week"
-              />
-            ) : (
-              <div
-                className="glass"
-                style={{
-                  padding: 14,
-                  border: '1px solid rgba(255,255,255,0.08)',
-                  opacity: 0.7
-                }}
-              >
-                <div style={{ fontSize: 14, opacity: 0.75 }}>KPI Tracking</div>
-                <div style={{ fontSize: 24, fontWeight: 800, marginTop: 4 }}>Not Required</div>
-                <div style={{ fontSize: 13, opacity: 0.8, marginTop: 6 }}>
-                  This tier does not require KPI tracking.
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
@@ -499,6 +460,7 @@ export default function Requirements() {
             <label style={{ display: 'block', marginBottom: 10 }}>
               Upload screenshot
               <input
+                ref={fileInputRef}
                 type="file"
                 accept="image/*"
                 onChange={handleProofFileChange}
@@ -507,33 +469,40 @@ export default function Requirements() {
             </label>
 
             <div
-              ref={pasteZoneRef}
               onPaste={handlePasteProof}
-              contentEditable
-              suppressContentEditableWarning
               className="glass"
+              tabIndex={0}
               style={{
-                minHeight: 90,
+                minHeight: 72,
                 padding: 12,
                 border: '1px dashed rgba(255,255,255,0.18)',
-                outline: 'none',
-                marginBottom: 10
+                marginBottom: 10,
+                display: 'flex',
+                alignItems: 'center'
               }}
             >
               Paste screenshot here with Ctrl/Cmd + V
             </div>
 
             {proofPreview ? (
-              <div style={{ marginBottom: 10 }}>
+              <div
+                className="glass"
+                style={{
+                  padding: 10,
+                  marginBottom: 10,
+                  border: '1px solid rgba(255,255,255,0.08)'
+                }}
+              >
                 <img
                   src={proofPreview}
                   alt="Lead pack proof preview"
                   style={{
                     width: '100%',
-                    maxHeight: 220,
+                    maxWidth: 260,
+                    maxHeight: 180,
                     objectFit: 'contain',
-                    borderRadius: 12,
-                    border: '1px solid rgba(255,255,255,0.08)'
+                    display: 'block',
+                    borderRadius: 10
                   }}
                 />
               </div>
