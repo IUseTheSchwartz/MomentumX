@@ -12,6 +12,10 @@ const saleDefaults = {
   notes: ''
 };
 
+const replacementDefaults = {
+  reason: ''
+};
+
 function isSameLocalDay(dateValue) {
   if (!dateValue) return false;
 
@@ -161,14 +165,48 @@ function downloadCsv(filename, csvText) {
   URL.revokeObjectURL(url);
 }
 
+function getRowReplacementRequest(row, requestsByLeadId) {
+  return requestsByLeadId[row.id] || null;
+}
+
+function getReplacementBadge(request) {
+  if (!request) return null;
+  if (request.status === 'pending') return { label: 'Replacement Pending', className: 'pill' };
+  if (request.status === 'accepted') return { label: 'Replacement Accepted', className: 'pill success' };
+  if (request.status === 'denied') return { label: 'Replacement Denied', className: 'pill danger' };
+  return null;
+}
+
+function compareLeadRows(a, b, sortOrder) {
+  const aTime = new Date(a.created_at || 0).getTime();
+  const bTime = new Date(b.created_at || 0).getTime();
+
+  if (aTime !== bTime) {
+    return sortOrder === 'oldest' ? aTime - bTime : bTime - aTime;
+  }
+
+  const aId = String(a.id || '');
+  const bId = String(b.id || '');
+
+  return sortOrder === 'oldest' ? aId.localeCompare(bId) : bId.localeCompare(aId);
+}
+
 export default function Leads() {
   const [rows, setRows] = useState([]);
+  const [replacementRequests, setReplacementRequests] = useState([]);
   const [activeLead, setActiveLead] = useState(null);
+  const [replacementLead, setReplacementLead] = useState(null);
+
   const [saleForm, setSaleForm] = useState(saleDefaults);
+  const [replacementForm, setReplacementForm] = useState(replacementDefaults);
+
   const [noteDrafts, setNoteDrafts] = useState({});
   const [callAmounts, setCallAmounts] = useState({});
   const [savingSale, setSavingSale] = useState(false);
   const [saleError, setSaleError] = useState('');
+  const [replacementError, setReplacementError] = useState('');
+  const [savingReplacement, setSavingReplacement] = useState(false);
+
   const [busyLeadId, setBusyLeadId] = useState(null);
   const [sessionUserId, setSessionUserId] = useState(null);
   const [exportMessage, setExportMessage] = useState('');
@@ -198,18 +236,32 @@ export default function Leads() {
 
     setSessionUserId(session.user.id);
 
-    const { data, error } = await supabase
-      .from('leads')
-      .select('*')
-      .eq('assigned_to', session.user.id)
-      .order('created_at', { ascending: false });
+    const [leadsResponse, replacementResponse] = await Promise.all([
+      supabase
+        .from('leads')
+        .select('*')
+        .eq('assigned_to', session.user.id)
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false }),
+      supabase
+        .from('lead_replacement_requests')
+        .select('*')
+        .eq('agent_id', session.user.id)
+        .order('requested_at', { ascending: false })
+        .order('id', { ascending: false })
+    ]);
 
-    if (error) {
-      console.error('Failed to load leads:', error);
+    if (leadsResponse.error) {
+      console.error('Failed to load leads:', leadsResponse.error);
       return;
     }
 
-    setRows(data || []);
+    if (replacementResponse.error) {
+      console.error('Failed to load replacement requests:', replacementResponse.error);
+    }
+
+    setRows(leadsResponse.data || []);
+    setReplacementRequests(replacementResponse.data || []);
   }
 
   useEffect(() => {
@@ -231,17 +283,13 @@ export default function Leads() {
   }, []);
 
   function replaceRowLocally(id, patch) {
-    setRows((prev) =>
-      prev.map((row) => (row.id === id ? { ...row, ...patch } : row))
-    );
+    setRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)));
   }
 
   async function persistLeadPatch(id, patch) {
     const query = supabase.from('leads').update(patch).eq('id', id);
-
     const scopedQuery = sessionUserId ? query.eq('assigned_to', sessionUserId) : query;
     const { error } = await scopedQuery;
-
     if (error) throw error;
   }
 
@@ -426,6 +474,52 @@ export default function Leads() {
     }
   }
 
+  function openReplacementModal(row) {
+    setReplacementLead(row);
+    setReplacementError('');
+    setReplacementForm({
+      reason: ''
+    });
+  }
+
+  async function submitReplacementRequest(e) {
+    e.preventDefault();
+
+    if (!replacementLead || !sessionUserId) return;
+
+    const trimmedReason = replacementForm.reason.trim();
+    if (!trimmedReason) {
+      setReplacementError('Please enter a reason for the replacement request.');
+      return;
+    }
+
+    setSavingReplacement(true);
+    setReplacementError('');
+
+    try {
+      const { data, error } = await supabase
+        .from('lead_replacement_requests')
+        .insert({
+          original_lead_id: replacementLead.id,
+          agent_id: sessionUserId,
+          reason: trimmedReason
+        })
+        .select('*')
+        .single();
+
+      if (error) throw error;
+
+      setReplacementRequests((prev) => [data, ...prev]);
+      setReplacementLead(null);
+      setReplacementForm(replacementDefaults);
+    } catch (error) {
+      console.error('Failed to request replacement:', error);
+      setReplacementError(error.message || 'Failed to submit replacement request.');
+    } finally {
+      setSavingReplacement(false);
+    }
+  }
+
   async function startRecording() {
     try {
       setRecordingStatus('');
@@ -543,6 +637,17 @@ export default function Leads() {
     return Array.from(new Set(rows.map((row) => row.lead_type).filter(Boolean))).sort();
   }, [rows]);
 
+  const requestsByLeadId = useMemo(() => {
+    const next = {};
+    for (const request of replacementRequests) {
+      if (!request?.original_lead_id) continue;
+      if (!next[request.original_lead_id]) {
+        next[request.original_lead_id] = request;
+      }
+    }
+    return next;
+  }, [replacementRequests]);
+
   const filteredRows = useMemo(() => {
     const next = rows
       .filter((row) => matchesSearch(row, search))
@@ -550,11 +655,7 @@ export default function Leads() {
       .filter((row) => (leadTypeFilter === 'all' ? true : row.lead_type === leadTypeFilter))
       .filter((row) => (categoryFilter === 'all' ? true : row.lead_category === categoryFilter));
 
-    next.sort((a, b) => {
-      const aTime = new Date(a.created_at || 0).getTime();
-      const bTime = new Date(b.created_at || 0).getTime();
-      return sortOrder === 'oldest' ? aTime - bTime : bTime - aTime;
-    });
+    next.sort((a, b) => compareLeadRows(a, b, sortOrder));
 
     return next;
   }, [rows, search, statusFilter, leadTypeFilter, categoryFilter, sortOrder]);
@@ -578,7 +679,7 @@ export default function Leads() {
       <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
           <h1>Leads</h1>
-          <p>Work leads, filter fast, and record sold business properly.</p>
+          <p>Work leads, filter fast, record sold business properly, and request replacements when needed.</p>
         </div>
 
         <div style={{ display: 'flex', gap: 10, alignItems: 'end', flexWrap: 'wrap' }}>
@@ -728,6 +829,10 @@ export default function Leads() {
         {visibleRows.map((row) => {
           const visibleCalledCount = getVisibleCalledCount(row);
           const selectedCallAmount = Number(callAmounts[row.id] || 1);
+          const replacementRequest = getRowReplacementRequest(row, requestsByLeadId);
+          const replacementBadge = getReplacementBadge(replacementRequest);
+          const disableReplacementButton =
+            replacementRequest?.status === 'pending' || replacementRequest?.status === 'accepted';
 
           return (
             <div key={row.id} className="lead-card glass">
@@ -746,6 +851,9 @@ export default function Leads() {
                   <span className="pill muted">Called Today {visibleCalledCount}</span>
                   {row.sale ? <span className="pill success">Sold</span> : null}
                   {row.do_not_call ? <span className="pill danger">DNC</span> : null}
+                  {replacementBadge ? (
+                    <span className={replacementBadge.className}>{replacementBadge.label}</span>
+                  ) : null}
                 </div>
               </div>
 
@@ -765,6 +873,22 @@ export default function Leads() {
                   </div>
                 ) : null}
               </div>
+
+              {replacementRequest ? (
+                <div className="glass" style={{ padding: 10, marginBottom: 10 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                    Replacement Request: {replacementRequest.status}
+                  </div>
+                  <div style={{ fontSize: 14, opacity: 0.9 }}>
+                    <strong>Reason:</strong> {replacementRequest.reason || '—'}
+                  </div>
+                  {replacementRequest.admin_note ? (
+                    <div style={{ fontSize: 14, opacity: 0.9, marginTop: 4 }}>
+                      <strong>Admin Note:</strong> {replacementRequest.admin_note}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
 
               <div
                 className="lead-actions"
@@ -825,6 +949,19 @@ export default function Leads() {
                   type="button"
                 >
                   Do Not Call
+                </button>
+
+                <button
+                  className="btn btn-ghost btn-small"
+                  onClick={() => openReplacementModal(row)}
+                  disabled={disableReplacementButton || busyLeadId === row.id}
+                  type="button"
+                >
+                  {replacementRequest?.status === 'pending'
+                    ? 'Replacement Pending'
+                    : replacementRequest?.status === 'accepted'
+                    ? 'Replacement Accepted'
+                    : 'Request Replacement'}
                 </button>
               </div>
 
@@ -961,6 +1098,55 @@ export default function Leads() {
                 </button>
                 <button type="submit" className="btn btn-primary" disabled={savingSale}>
                   {savingSale ? 'Saving...' : 'Save Sale'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {replacementLead ? (
+        <div className="modal-backdrop" onClick={() => setReplacementLead(null)}>
+          <div className="modal glass" onClick={(e) => e.stopPropagation()}>
+            <h2>Request Replacement</h2>
+            <p>
+              {replacementLead.first_name} {replacementLead.last_name} · {replacementLead.lead_type || '—'} ·{' '}
+              {replacementLead.lead_category || '—'}
+            </p>
+
+            <form className="form" onSubmit={submitReplacementRequest}>
+              <label>
+                Reason
+                <textarea
+                  rows="5"
+                  value={replacementForm.reason}
+                  onChange={(e) =>
+                    setReplacementForm((s) => ({
+                      ...s,
+                      reason: e.target.value
+                    }))
+                  }
+                  placeholder="Explain why this lead should be replaced..."
+                />
+              </label>
+
+              {replacementError ? (
+                <div className="top-gap" style={{ color: '#ff6b6b' }}>
+                  {replacementError}
+                </div>
+              ) : null}
+
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => setReplacementLead(null)}
+                  disabled={savingReplacement}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={savingReplacement}>
+                  {savingReplacement ? 'Submitting...' : 'Submit Request'}
                 </button>
               </div>
             </form>
