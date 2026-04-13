@@ -7,25 +7,73 @@ import { currency, formatDate } from '../../lib/utils';
 export default function KPI() {
   const [rows, setRows] = useState([]);
   const [view, setView] = useState('daily');
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState('');
 
   useEffect(() => {
+    let mounted = true;
+
     async function loadRows() {
-      const {
-        data: { session }
-      } = await supabase.auth.getSession();
+      setLoading(true);
+      setMessage('');
 
-      if (!session) return;
+      try {
+        const {
+          data: { session }
+        } = await supabase.auth.getSession();
 
-      const { data } = await supabase
-        .from('kpi_entries')
-        .select('*')
-        .eq('agent_id', session.user.id)
-        .order('entry_date', { ascending: false });
+        if (!session) {
+          if (mounted) {
+            setRows([]);
+            setMessage('No session found.');
+          }
+          return;
+        }
 
-      setRows(data || []);
+        const { data, error } = await supabase
+          .from('kpi_entries')
+          .select('*')
+          .eq('agent_id', session.user.id)
+          .order('entry_date', { ascending: false });
+
+        if (error) throw error;
+
+        if (mounted) {
+          setRows(data || []);
+        }
+      } catch (error) {
+        console.error('Failed to load KPI rows:', error);
+        if (mounted) {
+          setRows([]);
+          setMessage(error.message || 'Failed to load KPI.');
+        }
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
+      }
     }
 
     loadRows();
+
+    const handleFocus = () => {
+      loadRows();
+    };
+
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') {
+        loadRows();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisible);
+
+    return () => {
+      mounted = false;
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisible);
+    };
   }, []);
 
   const groupedRows = useMemo(() => {
@@ -90,7 +138,11 @@ export default function KPI() {
   }, [groupedRows]);
 
   const columns = [
-    { key: 'entry_date', label: view === 'daily' ? 'Day' : view === 'weekly' ? 'Week' : 'Month', render: (v) => formatDate(v) },
+    {
+      key: 'entry_date',
+      label: view === 'daily' ? 'Day' : view === 'weekly' ? 'Week' : 'Month',
+      render: (v) => formatDate(v)
+    },
     { key: 'dials', label: 'Dials' },
     { key: 'contacts', label: 'Contacts' },
     { key: 'sits', label: 'Sits' },
@@ -120,6 +172,12 @@ export default function KPI() {
         </div>
       </div>
 
+      {message ? (
+        <div className="glass" style={{ padding: 12, marginBottom: 12 }}>
+          {message}
+        </div>
+      ) : null}
+
       <div className="grid grid-4">
         <StatCard label="Dials" value={totals.dials} />
         <StatCard label="Contacts" value={totals.contacts} />
@@ -133,7 +191,13 @@ export default function KPI() {
       </div>
 
       <div className="top-gap">
-        <DataTable columns={columns} rows={groupedRows} />
+        {loading ? (
+          <div className="glass" style={{ padding: 16 }}>
+            Loading KPI...
+          </div>
+        ) : (
+          <DataTable columns={columns} rows={groupedRows} />
+        )}
       </div>
     </div>
   );
