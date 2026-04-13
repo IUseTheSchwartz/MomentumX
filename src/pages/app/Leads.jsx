@@ -280,6 +280,13 @@ export default function Leads() {
     }
 
     const { error: insertError } = await supabase.from('kpi_entries').insert({
+      const { data: profile } = await supabase
+  .from('profiles')
+  .select('id')
+  .eq('user_id', sessionUserId)
+  .single();
+
+if (!profile) throw new Error('Profile not found');
       agent_id: sessionUserId,
       entry_date: entryDate,
       dials: Number(delta.dials || 0),
