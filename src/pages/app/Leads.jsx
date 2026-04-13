@@ -508,17 +508,8 @@ export default function Leads() {
 
       const recordingUrl = publicUrlData?.publicUrl || null;
 
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('user_id', sessionUserId)
-        .single();
-
-      if (profileError) throw profileError;
-      if (!profile?.id) throw new Error('Profile not found.');
-
       const { error: insertError } = await supabase.from('lead_recordings').insert({
-        agent_id: profile.id,
+        agent_id: sessionUserId,
         lead_id: selectedLead?.id || null,
         file_name: fileName,
         recording_url: recordingUrl
