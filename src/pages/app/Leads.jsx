@@ -287,14 +287,30 @@ export default function Leads() {
   }
 
   async function persistLeadPatch(id, patch) {
-    const query = supabase.from('leads').update(patch).eq('id', id);
-    const scopedQuery = sessionUserId ? query.eq('assigned_to', sessionUserId) : query;
-    const { error } = await scopedQuery;
+    let query = supabase
+      .from('leads')
+      .update(patch)
+      .eq('id', id);
+
+    if (sessionUserId) {
+      query = query.eq('assigned_to', sessionUserId);
+    }
+
+    const { data, error } = await query.select('id').maybeSingle();
+
     if (error) throw error;
+
+    if (!data?.id) {
+      throw new Error('Lead update did not save. This lead may no longer be assigned to you.');
+    }
+
+    return data;
   }
 
   async function upsertKpiDelta(delta) {
-    if (!sessionUserId) return;
+    if (!sessionUserId) {
+      throw new Error('No session found for KPI update.');
+    }
 
     const entryDate = todayDateKey();
 
@@ -358,7 +374,13 @@ export default function Leads() {
     try {
       await persistLeadPatch(row.id, patch);
       replaceRowLocally(row.id, patch);
-      await upsertKpiDelta({ dials: selectedAmount });
+
+      try {
+        await upsertKpiDelta({ dials: selectedAmount });
+      } catch (kpiError) {
+        console.error('Lead saved but KPI failed:', kpiError);
+        alert('Lead was saved, but KPI did not update.');
+      }
     } catch (error) {
       console.error('Failed to mark called:', error);
       alert(error.message || 'Failed to mark lead as called.');
@@ -378,7 +400,13 @@ export default function Leads() {
     try {
       await persistLeadPatch(row.id, patch);
       replaceRowLocally(row.id, patch);
-      await upsertKpiDelta({ contacts: 1 });
+
+      try {
+        await upsertKpiDelta({ contacts: 1 });
+      } catch (kpiError) {
+        console.error('Lead saved but KPI failed:', kpiError);
+        alert('Lead was saved, but KPI did not update.');
+      }
     } catch (error) {
       console.error('Failed to mark DNC:', error);
       alert(error.message || 'Failed to update lead.');
@@ -398,7 +426,13 @@ export default function Leads() {
     try {
       await persistLeadPatch(row.id, patch);
       replaceRowLocally(row.id, patch);
-      await upsertKpiDelta({ contacts: 1, sits: 1 });
+
+      try {
+        await upsertKpiDelta({ contacts: 1, sits: 1 });
+      } catch (kpiError) {
+        console.error('Lead saved but KPI failed:', kpiError);
+        alert('Lead was saved, but KPI did not update.');
+      }
     } catch (error) {
       console.error('Failed to mark sit:', error);
       alert(error.message || 'Failed to update lead.');
@@ -443,11 +477,17 @@ export default function Leads() {
 
       await persistLeadPatch(activeLead.id, patch);
       replaceRowLocally(activeLead.id, patch);
-      await upsertKpiDelta({
-        contacts: 1,
-        sales: 1,
-        ap_sold: Number.isFinite(apSold) ? apSold : 0
-      });
+
+      try {
+        await upsertKpiDelta({
+          contacts: 1,
+          sales: 1,
+          ap_sold: Number.isFinite(apSold) ? apSold : 0
+        });
+      } catch (kpiError) {
+        console.error('Lead saved but KPI failed:', kpiError);
+        setSaleError('Sale saved, but KPI did not update.');
+      }
 
       setActiveLead(null);
       setSaleForm(saleDefaults);
