@@ -118,30 +118,102 @@ function getFirstValue(rawRow, keys) {
   return '';
 }
 
+function isLeapYear(year) {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function isValidDateParts(year, month, day) {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return false;
+  }
+
+  if (year < 1900 || year > 2100) return false;
+  if (month < 1 || month > 12) return false;
+  if (day < 1) return false;
+
+  const daysInMonth = [
+    31,
+    isLeapYear(year) ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31
+  ];
+
+  return day <= daysInMonth[month - 1];
+}
+
+function toIsoDate(year, month, day) {
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
 function normalizeDob(value) {
   if (!value) return null;
 
   const raw = String(value).trim();
   if (!raw) return null;
 
-  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (isoMatch) return raw;
+  // Excel-style numeric serial dates are intentionally not handled here.
+  // This parser is for string DOB formats only.
 
-  const slashMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (slashMatch) {
-    const month = slashMatch[1].padStart(2, '0');
-    const day = slashMatch[2].padStart(2, '0');
-    const year = slashMatch[3];
-    return `${year}-${month}-${day}`;
+  const normalized = raw.replace(/\./g, '/').replace(/-/g, '/').replace(/\s+/g, '');
+  const parts = normalized.split('/');
+
+  if (parts.length === 3 && parts.every((part) => /^\d+$/.test(part))) {
+    const [a, b, c] = parts.map((part) => Number(part));
+
+    // yyyy/mm/dd
+    if (String(parts[0]).length === 4) {
+      if (isValidDateParts(a, b, c)) {
+        return toIsoDate(a, b, c);
+      }
+      return null;
+    }
+
+    // dd/mm/yyyy or mm/dd/yyyy
+    if (String(parts[2]).length === 4) {
+      const year = c;
+
+      // Prefer day-first when it is clearly day-first.
+      if (a > 12 && isValidDateParts(year, b, a)) {
+        return toIsoDate(year, b, a);
+      }
+
+      // Prefer month-first when it is clearly month-first.
+      if (b > 12 && isValidDateParts(year, a, b)) {
+        return toIsoDate(year, a, b);
+      }
+
+      // If both are possible (example: 03/07/1998), default to month/day/year
+      if (isValidDateParts(year, a, b)) {
+        return toIsoDate(year, a, b);
+      }
+
+      // Fallback to day/month/year
+      if (isValidDateParts(year, b, a)) {
+        return toIsoDate(year, b, a);
+      }
+
+      return null;
+    }
   }
 
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return null;
 
   const year = parsed.getFullYear();
-  const month = String(parsed.getMonth() + 1).padStart(2, '0');
-  const day = String(parsed.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  const month = parsed.getMonth() + 1;
+  const day = parsed.getDate();
+
+  if (!isValidDateParts(year, month, day)) return null;
+
+  return toIsoDate(year, month, day);
 }
 
 function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
