@@ -1,3 +1,4 @@
+// src/pages/app/Leads.jsx
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { currency, formatDate } from '../../lib/utils';
@@ -58,13 +59,23 @@ function matchesSearch(row, query) {
     row.phone,
     row.email,
     row.lead_type,
-    row.status
+    row.status,
+    row.beneficiary_name,
+    row.military_branch,
+    row.dob
   ]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
 
   return text.includes(query.toLowerCase());
+}
+
+function formatDateOnly(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleDateString();
 }
 
 function csvEscape(value) {
@@ -78,6 +89,9 @@ function buildCsv(rows) {
     'Last Name',
     'Phone',
     'Email',
+    'DOB',
+    'Military Branch',
+    'Beneficiary',
     'Lead Type',
     'Lead Category',
     'Status',
@@ -105,6 +119,9 @@ function buildCsv(rows) {
       row.last_name || '',
       row.phone || '',
       row.email || '',
+      row.dob || '',
+      row.military_branch || '',
+      row.beneficiary_name || '',
       row.lead_type || '',
       row.lead_category || '',
       row.status || '',
@@ -220,10 +237,7 @@ export default function Leads() {
   }
 
   async function persistLeadPatch(id, patch) {
-    const query = supabase
-      .from('leads')
-      .update(patch)
-      .eq('id', id);
+    const query = supabase.from('leads').update(patch).eq('id', id);
 
     const scopedQuery = sessionUserId ? query.eq('assigned_to', sessionUserId) : query;
     const { error } = await scopedQuery;
@@ -733,6 +747,23 @@ export default function Leads() {
                   {row.sale ? <span className="pill success">Sold</span> : null}
                   {row.do_not_call ? <span className="pill danger">DNC</span> : null}
                 </div>
+              </div>
+
+              <div className="lead-extra">
+                <div className="lead-extra-item">
+                  <strong>Email:</strong> {row.email || '—'}
+                </div>
+                <div className="lead-extra-item">
+                  <strong>DOB:</strong> {formatDateOnly(row.dob)}
+                </div>
+                <div className="lead-extra-item">
+                  <strong>Beneficiary:</strong> {row.beneficiary_name || '—'}
+                </div>
+                {row.lead_type === 'Veteran' ? (
+                  <div className="lead-extra-item">
+                    <strong>Military Branch:</strong> {row.military_branch || '—'}
+                  </div>
+                ) : null}
               </div>
 
               <div
