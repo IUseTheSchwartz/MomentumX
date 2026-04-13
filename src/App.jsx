@@ -20,6 +20,7 @@ import Overview from './pages/admin/Overview';
 import Agents from './pages/admin/Agents';
 import AgentsRequirements from './pages/admin/AgentsRequirements';
 import LeadsAdmin from './pages/admin/LeadsAdmin';
+import ReplacementRequests from './pages/admin/ReplacementRequests';
 import Tiers from './pages/admin/Tiers';
 import Distribution from './pages/admin/Distribution';
 import Logs from './pages/admin/Logs';
@@ -63,6 +64,7 @@ export default function App() {
         <Route path="agents" element={<Agents />} />
         <Route path="agents-requirements" element={<AgentsRequirements />} />
         <Route path="leads" element={<LeadsAdmin />} />
+        <Route path="replacement-requests" element={<ReplacementRequests />} />
         <Route path="tiers" element={<Tiers />} />
         <Route path="distribution" element={<Distribution />} />
         <Route path="logs" element={<Logs />} />
