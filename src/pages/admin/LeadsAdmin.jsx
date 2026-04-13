@@ -1,3 +1,4 @@
+// src/pages/admin/LeadsAdmin.jsx
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import DataTable from '../../components/DataTable';
@@ -10,6 +11,13 @@ function formatDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '—';
   return date.toLocaleString();
+}
+
+function formatDateOnly(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleDateString();
 }
 
 function normalizePhone(value) {
@@ -110,6 +118,32 @@ function getFirstValue(rawRow, keys) {
   return '';
 }
 
+function normalizeDob(value) {
+  if (!value) return null;
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) return raw;
+
+  const slashMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slashMatch) {
+    const month = slashMatch[1].padStart(2, '0');
+    const day = slashMatch[2].padStart(2, '0');
+    const year = slashMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const day = String(parsed.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
   const firstName = getFirstValue(rawRow, [
     'first_name',
@@ -118,8 +152,7 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
     'First Name',
     'first_name_',
     'first_name__',
-    'full_name_first',
-    'first_name'
+    'full_name_first'
   ]);
 
   const lastName = getFirstValue(rawRow, [
@@ -145,6 +178,24 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
 
   const email = getFirstValue(rawRow, ['email', 'Email', 'email_address']);
 
+  const dob = normalizeDob(
+    getFirstValue(rawRow, ['dob', 'DOB', 'date_of_birth', 'Date of Birth'])
+  );
+
+  const beneficiaryName = getFirstValue(rawRow, [
+    'beneficiary_name',
+    'beneficiary',
+    'Beneficiary Name',
+    'Beneficiary'
+  ]);
+
+  const militaryBranch = getFirstValue(rawRow, [
+    'military_branch',
+    'branch',
+    'Military Branch',
+    'military'
+  ]);
+
   const baseRow = {
     batch_id: batchId,
     source_batch: batchName,
@@ -154,7 +205,10 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
     email: email || null,
     lead_type: leadType,
     lead_category: leadCategory,
-    status: 'New'
+    status: 'New',
+    dob,
+    beneficiary_name: beneficiaryName || null,
+    military_branch: leadType === 'Veteran' ? militaryBranch || null : null
   };
 
   if (leadType === 'Veteran') {
@@ -209,7 +263,10 @@ function matchesSearch(row, query) {
     row.email,
     row.lead_type,
     row.status,
-    row.source_batch
+    row.source_batch,
+    row.beneficiary_name,
+    row.military_branch,
+    row.dob
   ]
     .filter(Boolean)
     .join(' ')
@@ -220,6 +277,7 @@ function matchesSearch(row, query) {
 
 export default function LeadsAdmin() {
   const [rows, setRows] = useState([]);
+  const [totalCount, setTotalCount] = useState(0);
   const [file, setFile] = useState(null);
   const [leadType, setLeadType] = useState('Veteran');
   const [leadCategory, setLeadCategory] = useState('aged');
@@ -235,12 +293,28 @@ export default function LeadsAdmin() {
   const [pageSize, setPageSize] = useState('50');
 
   async function load() {
-    const { data } = await supabase
-      .from('leads')
-      .select('*')
-      .order('created_at', { ascending: false });
+    const [{ data, error }, { count, error: countError }] = await Promise.all([
+      supabase
+        .from('leads')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(1000),
+      supabase.from('leads').select('id', { count: 'exact', head: true })
+    ]);
 
-    setRows(data || []);
+    if (error) {
+      console.error('Failed to load admin leads:', error);
+      setRows([]);
+    } else {
+      setRows(data || []);
+    }
+
+    if (countError) {
+      console.error('Failed to count admin leads:', countError);
+      setTotalCount((data || []).length);
+    } else {
+      setTotalCount(count || 0);
+    }
   }
 
   useEffect(() => {
@@ -362,12 +436,14 @@ export default function LeadsAdmin() {
   const totals = useMemo(() => {
     return rows.reduce(
       (acc, row) => {
-        acc.total += 1;
         if (row.assigned_to) acc.assigned += 1;
         else acc.unassigned += 1;
         return acc;
       },
-      { total: 0, assigned: 0, unassigned: 0 }
+      {
+        assigned: 0,
+        unassigned: 0
+      }
     );
   }, [rows]);
 
@@ -376,6 +452,13 @@ export default function LeadsAdmin() {
     { key: 'last_name', label: 'Last' },
     { key: 'phone', label: 'Phone' },
     { key: 'email', label: 'Email' },
+    { key: 'dob', label: 'DOB', render: (v) => formatDateOnly(v) },
+    {
+      key: 'military_branch',
+      label: 'Military Branch',
+      render: (v, row) => (row.lead_type === 'Veteran' ? v || '—' : '—')
+    },
+    { key: 'beneficiary_name', label: 'Beneficiary', render: (v) => v || '—' },
     { key: 'lead_type', label: 'Lead Type' },
     { key: 'lead_category', label: 'Category' },
     { key: 'status', label: 'Status' },
@@ -418,7 +501,7 @@ export default function LeadsAdmin() {
         <div className="grid grid-3" style={{ flexShrink: 0, marginBottom: 12 }}>
           <div className="glass" style={{ padding: 14 }}>
             <strong>Total Leads</strong>
-            <div style={{ fontSize: 24, marginTop: 8 }}>{totals.total}</div>
+            <div style={{ fontSize: 24, marginTop: 8 }}>{totalCount}</div>
           </div>
           <div className="glass" style={{ padding: 14 }}>
             <strong>Assigned</strong>
@@ -545,7 +628,7 @@ export default function LeadsAdmin() {
           </div>
 
           <div className="top-gap" style={{ fontSize: 14, opacity: 0.85 }}>
-            Showing {visibleRows.length} of {filteredRows.length} matching leads
+            Showing {visibleRows.length} of {filteredRows.length} loaded leads · Total in table: {totalCount}
           </div>
         </div>
 
