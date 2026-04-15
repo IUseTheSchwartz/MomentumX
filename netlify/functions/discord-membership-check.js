@@ -5,6 +5,143 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'Content-Type'
 };
 
+function buildGuildIconUrl(guild) {
+  if (!guild?.id || !guild?.icon) return null;
+  return `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png`;
+}
+
+function truncate(value, max = 1024) {
+  const text = String(value ?? '');
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 3)}...`;
+}
+
+async function sendDiscordAuditWebhook({
+  webhookUrl,
+  email,
+  fullName,
+  avatarUrl,
+  discordId,
+  discordUsername,
+  serverId,
+  inServer,
+  nickname,
+  guilds
+}) {
+  if (!webhookUrl) return;
+
+  const guildList = Array.isArray(guilds) ? guilds : [];
+  const matchingGuild = guildList.find((g) => g.id === serverId) || null;
+
+  const guildLines = guildList.length
+    ? guildList.map((guild, index) => {
+        const iconUrl = buildGuildIconUrl(guild);
+        return `${index + 1}. ${guild.name} (${guild.id})${iconUrl ? `\n${iconUrl}` : ''}`;
+      })
+    : ['No guilds returned by Discord'];
+
+  const chunks = [];
+  let currentChunk = '';
+
+  for (const line of guildLines) {
+    const next = currentChunk ? `${currentChunk}\n\n${line}` : line;
+    if (next.length > 1000) {
+      if (currentChunk) chunks.push(currentChunk);
+      currentChunk = line;
+    } else {
+      currentChunk = next;
+    }
+  }
+
+  if (currentChunk) chunks.push(currentChunk);
+
+  const embed = {
+    title: inServer
+      ? 'Discord login approved'
+      : 'Discord login denied',
+    color: inServer ? 0x11d98c : 0xff3b4d,
+    thumbnail: avatarUrl ? { url: avatarUrl } : undefined,
+    fields: [
+      {
+        name: 'Discord username',
+        value: truncate(discordUsername || 'Unknown'),
+        inline: true
+      },
+      {
+        name: 'Discord ID',
+        value: truncate(discordId || 'Unknown'),
+        inline: true
+      },
+      {
+        name: 'In Momentum Financial',
+        value: inServer ? 'Yes' : 'No',
+        inline: true
+      },
+      {
+        name: 'Nickname in server',
+        value: truncate(nickname || 'None'),
+        inline: true
+      },
+      {
+        name: 'Email',
+        value: truncate(email || 'No email returned'),
+        inline: true
+      },
+      {
+        name: 'Full name',
+        value: truncate(fullName || 'Unknown'),
+        inline: true
+      },
+      {
+        name: 'Matched server',
+        value: matchingGuild
+          ? truncate(
+              `${matchingGuild.name} (${matchingGuild.id})${
+                buildGuildIconUrl(matchingGuild)
+                  ? `\n${buildGuildIconUrl(matchingGuild)}`
+                  : ''
+              }`
+            )
+          : 'Not found in target server'
+      },
+      {
+        name: `Servers returned by Discord (${guildList.length})`,
+        value: truncate(chunks[0] || 'None')
+      }
+    ],
+    footer: {
+      text: 'Momentum X Discord login audit'
+    },
+    timestamp: new Date().toISOString()
+  };
+
+  const extraEmbeds = chunks.slice(1, 10).map((chunk, index) => ({
+    title: `Additional servers ${index + 2}`,
+    color: inServer ? 0x11d98c : 0xff3b4d,
+    description: truncate(chunk, 4000)
+  }));
+
+  await fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: 'Momentum X Auth',
+      avatar_url:
+        'https://cdn.discordapp.com/embed/avatars/0.png',
+      embeds: [
+        {
+          ...embed,
+          fields: embed.fields.map((field) => ({
+            ...field,
+            value: field.value || '—'
+          }))
+        },
+        ...extraEmbeds
+      ]
+    })
+  });
+}
+
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') {
     return {
@@ -43,8 +180,8 @@ export async function handler(event) {
     }
 
     const serverId = process.env.DISCORD_SERVER_ID;
+    const webhookUrl = process.env.DISCORD_LOGIN_AUDIT_WEBHOOK_URL;
 
-    // STEP 1: confirm user is in guild
     const guildsRes = await fetch('https://discord.com/api/users/@me/guilds', {
       headers: {
         Authorization: `Bearer ${providerToken}`
@@ -62,15 +199,6 @@ export async function handler(event) {
     const guilds = await guildsRes.json();
     const inServer = Array.isArray(guilds) && guilds.some((g) => g.id === serverId);
 
-    if (!inServer) {
-      return {
-        statusCode: 403,
-        headers: corsHeaders,
-        body: JSON.stringify({ ok: false, error: 'Not in server' })
-      };
-    }
-
-    // STEP 2: fetch guild member to get nickname
     let nickname = null;
 
     try {
@@ -88,10 +216,30 @@ export async function handler(event) {
         nickname = member?.nick || null;
       }
     } catch {
-      // silently fail — fallback below
+      // fall through silently
     }
 
-    // FINAL NAME PRIORITY
+    await sendDiscordAuditWebhook({
+      webhookUrl,
+      email,
+      fullName,
+      avatarUrl,
+      discordId,
+      discordUsername,
+      serverId,
+      inServer,
+      nickname,
+      guilds
+    });
+
+    if (!inServer) {
+      return {
+        statusCode: 403,
+        headers: corsHeaders,
+        body: JSON.stringify({ ok: false, error: 'Not in server' })
+      };
+    }
+
     const finalDisplayName =
       nickname ||
       discordUsername ||
@@ -131,7 +279,7 @@ export async function handler(event) {
           email: email || existing.email,
           discord_id: discordId || existing.discord_id,
           discord_username: discordUsername || existing.discord_username,
-          display_name: finalDisplayName, // 🔥 ALWAYS SYNC NAME
+          display_name: finalDisplayName,
           avatar_url: avatarUrl || existing.avatar_url
         })
         .eq('id', userId);
