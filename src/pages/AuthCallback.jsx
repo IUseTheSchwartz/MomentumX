@@ -30,6 +30,10 @@ function getFriendlyOAuthMessage(errorCode, errorDescription) {
     return 'Login expired before it finished. Please try Discord login again.';
   }
 
+  if (text.includes('pkce')) {
+    return 'Login could not be completed on this browser. Please try Discord login again.';
+  }
+
   if (text.includes('over_email_send_rate_limit')) {
     return 'Too many login attempts right now. Please wait a minute and try again.';
   }
@@ -58,23 +62,7 @@ function hasFreshOAuthReturn() {
   );
 }
 
-async function exchangeSessionFromUrlIfNeeded() {
-  const search = new URLSearchParams(window.location.search);
-  const code = search.get('code');
-
-  if (!code) return null;
-
-  const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-
-  if (error) {
-    console.error('[AuthCallback] exchangeCodeForSession failed', error);
-    return null;
-  }
-
-  return data.session || null;
-}
-
-async function waitForStableSession({ timeoutMs = 5000, intervalMs = 250 } = {}) {
+async function waitForStableSession({ timeoutMs = 6000, intervalMs = 250 } = {}) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
@@ -90,7 +78,7 @@ async function waitForStableSession({ timeoutMs = 5000, intervalMs = 250 } = {})
   return null;
 }
 
-async function waitForProviderToken({ timeoutMs = 3000, intervalMs = 200 } = {}) {
+async function waitForProviderToken({ timeoutMs = 3500, intervalMs = 200 } = {}) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
@@ -137,11 +125,10 @@ export default function AuthCallback() {
 
         setMessage('Completing login...');
 
-        if (freshOAuthReturn) {
-          await exchangeSessionFromUrlIfNeeded();
-        }
-
-        if (!active) return;
+        // IMPORTANT:
+        // Do NOT call exchangeCodeForSession here.
+        // Supabase is already handling OAuth callback automatically because
+        // detectSessionInUrl: true is enabled in supabaseClient.js.
 
         const session = await waitForStableSession();
 
@@ -155,8 +142,6 @@ export default function AuthCallback() {
           return;
         }
 
-        // If this is NOT a fresh OAuth return, do not re-run Discord membership verification.
-        // This covers reopened tabs / restored sessions.
         if (!freshOAuthReturn) {
           navigate('/app/dashboard', { replace: true });
           return;
@@ -176,8 +161,6 @@ export default function AuthCallback() {
 
         const providerToken = tokenSession.provider_token;
 
-        // Fresh OAuth login should normally have a provider token.
-        // If it does not, treat it as a login failure, not "not a member".
         if (!providerToken) {
           setMessage('Discord login did not finish correctly. Sending you back...');
           await supabase.auth.signOut();
@@ -224,7 +207,6 @@ export default function AuthCallback() {
         if (!active) return;
 
         if (!response?.ok || !data?.ok) {
-          // Only true denied membership should go denied.
           if (response?.status === 403) {
             await supabase.auth.signOut();
             navigate('/denied', { replace: true });
