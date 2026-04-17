@@ -11,26 +11,24 @@ function getOAuthErrorDetails() {
   const search = new URLSearchParams(window.location.search);
   const hash = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
 
-  const error =
-    search.get('error') ||
-    hash.get('error') ||
-    null;
-
-  const errorCode =
-    search.get('error_code') ||
-    hash.get('error_code') ||
-    null;
-
+  const error = search.get('error') || hash.get('error') || null;
+  const errorCode = search.get('error_code') || hash.get('error_code') || null;
   const errorDescription =
-    search.get('error_description') ||
-    hash.get('error_description') ||
-    null;
+    search.get('error_description') || hash.get('error_description') || null;
 
   return { error, errorCode, errorDescription };
 }
 
 function getFriendlyOAuthMessage(errorCode, errorDescription) {
   const text = `${errorCode || ''} ${errorDescription || ''}`.toLowerCase();
+
+  if (text.includes('bad_oauth_state')) {
+    return 'Login expired before it finished. Please try Discord login again.';
+  }
+
+  if (text.includes('oauth state not found or expired')) {
+    return 'Login expired before it finished. Please try Discord login again.';
+  }
 
   if (text.includes('over_email_send_rate_limit')) {
     return 'Too many login attempts right now. Please wait a minute and try again.';
@@ -47,6 +45,19 @@ function getFriendlyOAuthMessage(errorCode, errorDescription) {
   return 'Login failed. Please try again.';
 }
 
+function hasFreshOAuthReturn() {
+  const search = new URLSearchParams(window.location.search);
+  const hash = window.location.hash || '';
+
+  return (
+    search.has('code') ||
+    search.has('error') ||
+    hash.includes('access_token=') ||
+    hash.includes('refresh_token=') ||
+    hash.includes('error=')
+  );
+}
+
 async function exchangeSessionFromUrlIfNeeded() {
   const search = new URLSearchParams(window.location.search);
   const code = search.get('code');
@@ -55,7 +66,10 @@ async function exchangeSessionFromUrlIfNeeded() {
 
   const { data, error } = await supabase.auth.exchangeCodeForSession(code);
 
-  if (error) return null;
+  if (error) {
+    console.error('[AuthCallback] exchangeCodeForSession failed', error);
+    return null;
+  }
 
   return data.session || null;
 }
@@ -101,6 +115,7 @@ export default function AuthCallback() {
 
     async function run() {
       try {
+        const freshOAuthReturn = hasFreshOAuthReturn();
         const { error, errorCode, errorDescription } = getOAuthErrorDetails();
 
         if (error) {
@@ -122,11 +137,13 @@ export default function AuthCallback() {
 
         setMessage('Completing login...');
 
-        await exchangeSessionFromUrlIfNeeded();
+        if (freshOAuthReturn) {
+          await exchangeSessionFromUrlIfNeeded();
+        }
 
         if (!active) return;
 
-        let session = await waitForStableSession();
+        const session = await waitForStableSession();
 
         if (!active) return;
 
@@ -138,21 +155,36 @@ export default function AuthCallback() {
           return;
         }
 
-        if (!session.provider_token) {
+        // If this is NOT a fresh OAuth return, do not re-run Discord membership verification.
+        // This covers reopened tabs / restored sessions.
+        if (!freshOAuthReturn) {
+          navigate('/app/dashboard', { replace: true });
+          return;
+        }
+
+        let tokenSession = session;
+
+        if (!tokenSession.provider_token) {
           setMessage('Finalizing Discord access...');
           const tokenReadySession = await waitForProviderToken();
           if (tokenReadySession) {
-            session = tokenReadySession;
+            tokenSession = tokenReadySession;
           }
         }
 
         if (!active) return;
 
-        const providerToken = session.provider_token;
+        const providerToken = tokenSession.provider_token;
 
+        // Fresh OAuth login should normally have a provider token.
+        // If it does not, treat it as a login failure, not "not a member".
         if (!providerToken) {
+          setMessage('Discord login did not finish correctly. Sending you back...');
           await supabase.auth.signOut();
-          if (active) navigate('/denied', { replace: true });
+
+          setTimeout(() => {
+            if (active) navigate('/', { replace: true });
+          }, 1200);
           return;
         }
 
@@ -167,32 +199,44 @@ export default function AuthCallback() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               providerToken,
-              userId: session.user.id,
-              email: session.user.email,
+              userId: tokenSession.user.id,
+              email: tokenSession.user.email,
               fullName:
-                session.user.user_metadata?.full_name ||
-                session.user.user_metadata?.name ||
-                session.user.email ||
+                tokenSession.user.user_metadata?.full_name ||
+                tokenSession.user.user_metadata?.name ||
+                tokenSession.user.email ||
                 'Momentum Agent',
-              avatarUrl: session.user.user_metadata?.avatar_url || null,
-              discordId: session.user.user_metadata?.provider_id || null,
+              avatarUrl: tokenSession.user.user_metadata?.avatar_url || null,
+              discordId: tokenSession.user.user_metadata?.provider_id || null,
               discordUsername:
-                session.user.user_metadata?.preferred_username ||
-                session.user.user_metadata?.full_name ||
-                session.user.email
+                tokenSession.user.user_metadata?.preferred_username ||
+                tokenSession.user.user_metadata?.full_name ||
+                tokenSession.user.email
             })
           });
 
           data = await response.json();
-        } catch {
+        } catch (fetchError) {
+          console.error('[AuthCallback] membership check failed', fetchError);
           data = null;
         }
 
         if (!active) return;
 
         if (!response?.ok || !data?.ok) {
+          // Only true denied membership should go denied.
+          if (response?.status === 403) {
+            await supabase.auth.signOut();
+            navigate('/denied', { replace: true });
+            return;
+          }
+
+          setMessage('Login check failed. Sending you back...');
           await supabase.auth.signOut();
-          navigate('/denied', { replace: true });
+
+          setTimeout(() => {
+            if (active) navigate('/', { replace: true });
+          }, 1200);
           return;
         }
 
