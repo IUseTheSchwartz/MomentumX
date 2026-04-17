@@ -4,6 +4,19 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import Starfield from '../components/Starfield';
 
+function hasOAuthParams() {
+  const hash = window.location.hash || '';
+  const search = window.location.search || '';
+
+  return (
+    hash.includes('access_token=') ||
+    hash.includes('refresh_token=') ||
+    hash.includes('error=') ||
+    search.includes('code=') ||
+    search.includes('error=')
+  );
+}
+
 export default function Landing() {
   const navigate = useNavigate();
   const [showX, setShowX] = useState(false);
@@ -12,16 +25,7 @@ export default function Landing() {
   useEffect(() => {
     let mounted = true;
 
-    const hash = window.location.hash || '';
-    const search = window.location.search || '';
-
-    if (
-      hash.includes('access_token=') ||
-      hash.includes('refresh_token=') ||
-      search.includes('code=') ||
-      search.includes('error=') ||
-      hash.includes('error=')
-    ) {
+    if (hasOAuthParams()) {
       navigate('/auth/callback', { replace: true });
       return;
     }
@@ -31,9 +35,11 @@ export default function Landing() {
         data: { session }
       } = await supabase.auth.getSession();
 
-      if (mounted && session) {
-        navigate('/auth/callback', { replace: true });
-      }
+      if (!mounted || !session) return;
+
+      // Normal restored session should go straight into app routing,
+      // not back through OAuth callback handling.
+      navigate('/app/dashboard', { replace: true });
     }
 
     bootstrap();
@@ -43,13 +49,14 @@ export default function Landing() {
     } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return;
 
+      // Fresh login or restored valid session should go into the app.
       if (
         session &&
         (event === 'SIGNED_IN' ||
           event === 'TOKEN_REFRESHED' ||
           event === 'INITIAL_SESSION')
       ) {
-        navigate('/auth/callback', { replace: true });
+        navigate('/app/dashboard', { replace: true });
       }
     });
 
@@ -70,17 +77,20 @@ export default function Landing() {
     setLoggingIn(true);
 
     try {
-      await supabase.auth.signOut();
-
       const redirectTo = `${window.location.origin}/auth/callback`;
 
-      await supabase.auth.signInWithOAuth({
+      const { error } = await supabase.auth.signInWithOAuth({
         provider: 'discord',
         options: {
           redirectTo,
           scopes: 'identify email guilds guilds.members.read'
         }
       });
+
+      if (error) {
+        console.error('[Landing] Discord login failed', error);
+        setLoggingIn(false);
+      }
     } catch (error) {
       console.error('[Landing] Discord login failed', error);
       setLoggingIn(false);
