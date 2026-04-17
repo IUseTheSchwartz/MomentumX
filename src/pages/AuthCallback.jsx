@@ -94,6 +94,17 @@ async function waitForProviderToken({ timeoutMs = 3500, intervalMs = 200 } = {})
   return null;
 }
 
+async function getExistingProfile(userId) {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, is_admin, lead_access_banned')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (error) return null;
+  return data || null;
+}
+
 export default function AuthCallback() {
   const navigate = useNavigate();
   const [message, setMessage] = useState('Verifying access...');
@@ -124,11 +135,6 @@ export default function AuthCallback() {
         }
 
         setMessage('Completing login...');
-
-        // IMPORTANT:
-        // Do NOT call exchangeCodeForSession here.
-        // Supabase is already handling OAuth callback automatically because
-        // detectSessionInUrl: true is enabled in supabaseClient.js.
 
         const session = await waitForStableSession();
 
@@ -161,8 +167,33 @@ export default function AuthCallback() {
 
         const providerToken = tokenSession.provider_token;
 
+        // Fallback for browsers/devices where provider_token does not come through.
+        // If the user already has an approved profile, let them in.
         if (!providerToken) {
-          setMessage('Discord login did not finish correctly. Sending you back...');
+          setMessage('Finishing login...');
+
+          const existingProfile = await getExistingProfile(tokenSession.user.id);
+
+          if (!active) return;
+
+          if (existingProfile) {
+            if (existingProfile.lead_access_banned) {
+              navigate('/ineligible', { replace: true });
+              return;
+            }
+
+            if (existingProfile.is_admin) {
+              navigate('/admin/overview', { replace: true });
+              return;
+            }
+
+            navigate('/app/dashboard', { replace: true });
+            return;
+          }
+
+          // No provider token AND no existing approved profile:
+          // this is likely a true first-login browser issue, so send back home.
+          setMessage('Discord login did not finish correctly. Please try again.');
           await supabase.auth.signOut();
 
           setTimeout(() => {
