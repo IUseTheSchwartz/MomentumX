@@ -1,3 +1,4 @@
+// src/pages/admin/AgentsRequirements.jsx
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { currency, formatDate } from '../../lib/utils';
@@ -239,7 +240,7 @@ function SummaryBox({ title, value, subtext, onClick, badgeCount = 0 }) {
       style={{
         padding: 14,
         textAlign: 'left',
-        border: '1px solid rgba(255,255,255,0.08)',
+        border: badgeCount > 0 ? '1px solid rgba(17,217,140,0.28)' : '1px solid rgba(255,255,255,0.08)',
         cursor: 'pointer',
         display: 'flex',
         flexDirection: 'column',
@@ -372,7 +373,7 @@ function Modal({ open, title, children, onClose, controls }) {
 function NoteBubble({ note, currentUserId }) {
   const isMine = note.sender_id === currentUserId;
   const senderName =
-    note.profiles?.display_name || note.profiles?.email || (isMine ? 'You' : 'Agent');
+    note.sender_profile?.display_name || note.sender_profile?.email || (isMine ? 'You' : 'Agent');
 
   return (
     <div
@@ -458,6 +459,31 @@ function RecordingNotesPanel({
   );
 }
 
+function UnreadPill({ count }) {
+  if (!count) return null;
+
+  return (
+    <span
+      style={{
+        minWidth: 24,
+        height: 24,
+        padding: '0 8px',
+        borderRadius: 999,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: 12,
+        fontWeight: 800,
+        background: 'rgba(17,217,140,0.18)',
+        border: '1px solid rgba(17,217,140,0.3)',
+        color: '#34d399'
+      }}
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
+
 export default function AgentsRequirements() {
   const [agents, setAgents] = useState([]);
   const [search, setSearch] = useState('');
@@ -482,75 +508,151 @@ export default function AgentsRequirements() {
     load();
   }, []);
 
-  async function load() {
-    setLoading(true);
+  useEffect(() => {
+    const channel = supabase
+      .channel('admin-agents-requirements-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'lead_recordings' },
+        () => {
+          load();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'recording_notes' },
+        () => {
+          load();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'recording_note_reads' },
+        () => {
+          load();
+        }
+      )
+      .subscribe();
 
-    const {
-      data: { session }
-    } = await supabase.auth.getSession();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
-    if (session) {
-      setCurrentUserId(session.user.id);
+  async function loadRecordingNotesState(recordingIds, userId) {
+    if (!recordingIds.length || !userId) {
+      setNotesByRecording({});
+      setReadsByRecording({});
+      return;
     }
 
-    const [{ data: profiles }, { data: recs }, { data: vids }, { data: proofs }, { data: kpi }] =
+    const [{ data: noteRows, error: notesError }, { data: readRows, error: readsError }] =
       await Promise.all([
-        supabase.from('profiles').select('id, display_name, email, tiers(id, name)').order('display_name'),
-        supabase.from('lead_recordings').select('*, leads(first_name,last_name,phone)').order('created_at', { ascending: false }),
-        supabase.from('agent_videos').select('*').order('created_at', { ascending: false }),
-        supabase.from('lead_pack_proofs').select('*').order('created_at', { ascending: false }),
-        supabase.from('kpi_entries').select('*').order('entry_date', { ascending: false })
-      ]);
-
-    const grouped = (profiles || []).map((agent) => ({
-      ...agent,
-      tierName: agent.tiers?.name || 'No Tier',
-      recordings: (recs || []).filter((r) => r.agent_id === agent.id),
-      videos: (vids || []).filter((v) => v.agent_id === agent.id),
-      proofs: (proofs || []).filter((p) => p.agent_id === agent.id),
-      kpi: (kpi || []).filter((k) => k.agent_id === agent.id)
-    }));
-
-    setAgents(grouped);
-
-    const recordingIds = (recs || []).map((row) => row.id);
-
-    if (recordingIds.length && session?.user?.id) {
-      const [{ data: noteRows }, { data: readRows }] = await Promise.all([
         supabase
           .from('recording_notes')
-          .select('*, profiles!recording_notes_sender_id_fkey(id, display_name, email, is_admin)')
+          .select('id, recording_id, sender_id, body, created_at')
           .in('recording_id', recordingIds)
           .order('created_at', { ascending: true }),
         supabase
           .from('recording_note_reads')
-          .select('*')
-          .eq('user_id', session.user.id)
+          .select('recording_id, user_id, last_read_at')
+          .eq('user_id', userId)
           .in('recording_id', recordingIds)
       ]);
 
-      const nextNotesByRecording = {};
-      for (const id of recordingIds) {
-        nextNotesByRecording[id] = [];
-      }
-      for (const row of noteRows || []) {
-        if (!nextNotesByRecording[row.recording_id]) nextNotesByRecording[row.recording_id] = [];
-        nextNotesByRecording[row.recording_id].push(row);
-      }
-
-      const nextReadsByRecording = {};
-      for (const row of readRows || []) {
-        nextReadsByRecording[row.recording_id] = row;
-      }
-
-      setNotesByRecording(nextNotesByRecording);
-      setReadsByRecording(nextReadsByRecording);
-    } else {
+    if (notesError) {
+      console.error('Failed to load recording notes:', notesError);
       setNotesByRecording({});
+      setReadsByRecording({});
+      return;
+    }
+
+    if (readsError) {
+      console.error('Failed to load recording note reads:', readsError);
       setReadsByRecording({});
     }
 
-    setLoading(false);
+    const senderIds = Array.from(new Set((noteRows || []).map((row) => row.sender_id).filter(Boolean)));
+
+    const { data: senderProfiles, error: senderProfilesError } = senderIds.length
+      ? await supabase.from('profiles').select('id, display_name, email').in('id', senderIds)
+      : { data: [], error: null };
+
+    if (senderProfilesError) {
+      console.error('Failed to load note sender profiles:', senderProfilesError);
+    }
+
+    const senderProfilesById = {};
+    for (const profile of senderProfiles || []) {
+      senderProfilesById[profile.id] = profile;
+    }
+
+    const nextNotesByRecording = {};
+    for (const id of recordingIds) {
+      nextNotesByRecording[id] = [];
+    }
+
+    for (const row of noteRows || []) {
+      if (!nextNotesByRecording[row.recording_id]) {
+        nextNotesByRecording[row.recording_id] = [];
+      }
+
+      nextNotesByRecording[row.recording_id].push({
+        ...row,
+        sender_profile: senderProfilesById[row.sender_id] || null
+      });
+    }
+
+    const nextReadsByRecording = {};
+    for (const row of readRows || []) {
+      nextReadsByRecording[row.recording_id] = row;
+    }
+
+    setNotesByRecording(nextNotesByRecording);
+    setReadsByRecording(nextReadsByRecording);
+  }
+
+  async function load() {
+    setLoading(true);
+
+    try {
+      const {
+        data: { session }
+      } = await supabase.auth.getSession();
+
+      const userId = session?.user?.id || null;
+      setCurrentUserId(userId);
+
+      const [{ data: profiles }, { data: recs }, { data: vids }, { data: proofs }, { data: kpi }] =
+        await Promise.all([
+          supabase.from('profiles').select('id, display_name, email, tiers(id, name)').order('display_name'),
+          supabase.from('lead_recordings').select('*, leads(first_name,last_name,phone)').order('created_at', { ascending: false }),
+          supabase.from('agent_videos').select('*').order('created_at', { ascending: false }),
+          supabase.from('lead_pack_proofs').select('*').order('created_at', { ascending: false }),
+          supabase.from('kpi_entries').select('*').order('entry_date', { ascending: false })
+        ]);
+
+      const grouped = (profiles || []).map((agent) => ({
+        ...agent,
+        tierName: agent.tiers?.name || 'No Tier',
+        recordings: (recs || []).filter((r) => r.agent_id === agent.id),
+        videos: (vids || []).filter((v) => v.agent_id === agent.id),
+        proofs: (proofs || []).filter((p) => p.agent_id === agent.id),
+        kpi: (kpi || []).filter((k) => k.agent_id === agent.id)
+      }));
+
+      setAgents(grouped);
+
+      const recordingIds = (recs || []).map((row) => row.id).filter(Boolean);
+      await loadRecordingNotesState(recordingIds, userId);
+    } catch (error) {
+      console.error('Failed to load agents requirements:', error);
+      setAgents([]);
+      setNotesByRecording({});
+      setReadsByRecording({});
+    } finally {
+      setLoading(false);
+    }
   }
 
   function getUnreadCount(recordingId) {
@@ -637,6 +739,8 @@ export default function AgentsRequirements() {
           last_read_at: nowIso
         }
       }));
+    } else {
+      console.error('Failed to mark recording notes read:', error);
     }
   }
 
@@ -770,7 +874,12 @@ export default function AgentsRequirements() {
               className="glass"
               style={{
                 padding: 16,
-                border: expanded ? '1px solid rgba(255,255,255,0.12)' : '1px solid transparent'
+                border:
+                  recordingUnreadCount > 0
+                    ? '1px solid rgba(17,217,140,0.22)'
+                    : expanded
+                      ? '1px solid rgba(255,255,255,0.12)'
+                      : '1px solid transparent'
               }}
             >
               <div
@@ -785,26 +894,7 @@ export default function AgentsRequirements() {
                 <div>
                   <div style={{ fontSize: 20, fontWeight: 800, display: 'flex', alignItems: 'center', gap: 10 }}>
                     {agent.display_name || 'Unnamed Agent'}
-                    {recordingUnreadCount > 0 ? (
-                      <span
-                        style={{
-                          minWidth: 24,
-                          height: 24,
-                          padding: '0 8px',
-                          borderRadius: 999,
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          fontSize: 12,
-                          fontWeight: 800,
-                          background: 'rgba(17,217,140,0.18)',
-                          border: '1px solid rgba(17,217,140,0.3)',
-                          color: '#34d399'
-                        }}
-                      >
-                        {recordingUnreadCount > 99 ? '99+' : recordingUnreadCount}
-                      </span>
-                    ) : null}
+                    <UnreadPill count={recordingUnreadCount} />
                   </div>
                   <div style={{ opacity: 0.75, fontSize: 14 }}>
                     {agent.email || 'No email'} · {agent.tierName}
@@ -1019,15 +1109,32 @@ export default function AgentsRequirements() {
                           style={{
                             padding: 12,
                             borderRadius: 12,
-                            border: '1px solid rgba(255,255,255,0.08)'
+                            border:
+                              unreadCount > 0
+                                ? '1px solid rgba(17,217,140,0.28)'
+                                : '1px solid rgba(255,255,255,0.08)'
                           }}
                         >
-                          <div style={{ fontWeight: 700 }}>
-                            {leadName || item.leads?.phone || (item.uploaded_manually ? 'Manual upload' : 'No lead attached')}
+                          <div
+                            style={{
+                              fontWeight: 700,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 10,
+                              flexWrap: 'wrap'
+                            }}
+                          >
+                            <span>
+                              {leadName || item.leads?.phone || (item.uploaded_manually ? 'Manual upload' : 'No lead attached')}
+                            </span>
+                            <UnreadPill count={unreadCount} />
                           </div>
+
                           <div style={{ fontSize: 13, opacity: 0.75, margin: '4px 0 8px' }}>
                             {item.file_name || 'Recording'} · {formatDate(item.recorded_for_date || item.created_at)}
                           </div>
+
                           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
                             <a href={item.recording_url} target="_blank" rel="noreferrer">
                               Open
