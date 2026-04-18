@@ -26,6 +26,7 @@ const adminLinks = [
 ];
 
 const PROFILE_TIMEOUT_MS = 8000;
+const SUPPORT_REFRESH_INTERVAL_MS = 15000;
 
 function withTimeout(promise, ms) {
   return Promise.race([
@@ -76,6 +77,88 @@ export default function AppShell({ admin = false }) {
   const mountedRef = useRef(true);
   const lastProfileRef = useRef(null);
   const refreshInFlightRef = useRef(false);
+  const navRefreshInFlightRef = useRef(false);
+
+  async function loadNavCountsForUser(userId, isAdmin) {
+    if (!userId || navRefreshInFlightRef.current) return;
+
+    navRefreshInFlightRef.current = true;
+
+    try {
+      let replacementRequests = 0;
+
+      if (isAdmin) {
+        const { count, error } = await supabase
+          .from('lead_replacement_requests')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'pending');
+
+        if (!error) {
+          replacementRequests = count || 0;
+        }
+      }
+
+      let support = 0;
+
+      const { data: ticketRows, error: ticketsError } = await supabase
+        .from('support_tickets')
+        .select('id');
+
+      if (!ticketsError) {
+        const ticketIds = (ticketRows || []).map((row) => row.id).filter(Boolean);
+
+        if (ticketIds.length) {
+          const [{ data: messageRows, error: messagesError }, { data: readRows, error: readsError }] =
+            await Promise.all([
+              supabase
+                .from('support_messages')
+                .select('ticket_id, sender_id, created_at')
+                .in('ticket_id', ticketIds)
+                .order('created_at', { ascending: false }),
+              supabase
+                .from('support_message_reads')
+                .select('ticket_id, last_read_at')
+                .eq('user_id', userId)
+                .in('ticket_id', ticketIds)
+            ]);
+
+          if (!messagesError && !readsError) {
+            const readsByTicketId = {};
+            for (const row of readRows || []) {
+              readsByTicketId[row.ticket_id] = row;
+            }
+
+            const latestIncomingByTicketId = {};
+            for (const row of messageRows || []) {
+              if (row.sender_id === userId) continue;
+              if (!latestIncomingByTicketId[row.ticket_id]) {
+                latestIncomingByTicketId[row.ticket_id] = row;
+              }
+            }
+
+            support = Object.values(latestIncomingByTicketId).reduce((sum, row) => {
+              const readAt = readsByTicketId[row.ticket_id]?.last_read_at
+                ? new Date(readsByTicketId[row.ticket_id].last_read_at).getTime()
+                : 0;
+              const messageAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+              return sum + (messageAt > readAt ? 1 : 0);
+            }, 0);
+          }
+        }
+      }
+
+      if (mountedRef.current) {
+        setNavCounts({
+          replacementRequests,
+          support
+        });
+      }
+    } catch (error) {
+      console.error('Failed to load sidebar notification counts:', error);
+    } finally {
+      navRefreshInFlightRef.current = false;
+    }
+  }
 
   useEffect(() => {
     mountedRef.current = true;
@@ -86,6 +169,10 @@ export default function AppShell({ admin = false }) {
       if (!nextSession) {
         lastProfileRef.current = null;
         setProfile(null);
+        setNavCounts({
+          replacementRequests: 0,
+          support: 0
+        });
         return;
       }
 
@@ -104,6 +191,7 @@ export default function AppShell({ admin = false }) {
         if (keepPreviousOnFailure && lastProfileRef.current) {
           setProfile(lastProfileRef.current);
         }
+        await loadNavCountsForUser(nextSession.user.id, admin);
         return;
       }
 
@@ -115,12 +203,16 @@ export default function AppShell({ admin = false }) {
         } else {
           setProfile(null);
         }
+
+        await loadNavCountsForUser(nextSession.user.id, admin);
         return;
       }
 
       const safeProfile = data || null;
       lastProfileRef.current = safeProfile;
       setProfile(safeProfile);
+
+      await loadNavCountsForUser(nextSession.user.id, admin);
     }
 
     async function refreshFromSession({ keepPreviousOnFailure = true } = {}) {
@@ -181,146 +273,52 @@ export default function AppShell({ admin = false }) {
       document.removeEventListener('visibilitychange', handleVisible);
       window.removeEventListener('focus', handleFocus);
     };
-  }, []);
+  }, [admin]);
 
   useEffect(() => {
-    let cancelled = false;
+    if (!session?.user?.id) return;
 
-    async function loadNavCounts() {
-      if (!session?.user?.id) {
-        if (!cancelled) {
-          setNavCounts({
-            replacementRequests: 0,
-            support: 0
-          });
+    loadNavCountsForUser(session.user.id, admin);
+
+    const intervalId = window.setInterval(() => {
+      loadNavCountsForUser(session.user.id, admin);
+    }, SUPPORT_REFRESH_INTERVAL_MS);
+
+    const channel = supabase
+      .channel(`app-shell-notifications-${session.user.id}-${admin ? 'admin' : 'agent'}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'lead_replacement_requests' },
+        () => {
+          loadNavCountsForUser(session.user.id, admin);
         }
-        return;
-      }
-
-      const userId = session.user.id;
-
-      try {
-        let replacementRequests = 0;
-
-        if (admin) {
-          const { count, error } = await supabase
-            .from('lead_replacement_requests')
-            .select('id', { count: 'exact', head: true })
-            .eq('status', 'pending');
-
-          if (!error) {
-            replacementRequests = count || 0;
-          }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'support_tickets' },
+        () => {
+          loadNavCountsForUser(session.user.id, admin);
         }
-
-        let support = 0;
-
-        const { data: ticketRows, error: ticketsError } = await supabase
-          .from('support_tickets')
-          .select('id');
-
-        if (!ticketsError) {
-          const ticketIds = (ticketRows || []).map((row) => row.id).filter(Boolean);
-
-          if (ticketIds.length) {
-            const [{ data: messageRows, error: messagesError }, { data: readRows, error: readsError }] =
-              await Promise.all([
-                supabase
-                  .from('support_messages')
-                  .select('ticket_id, sender_id, created_at')
-                  .in('ticket_id', ticketIds)
-                  .order('created_at', { ascending: false }),
-                supabase
-                  .from('support_message_reads')
-                  .select('ticket_id, last_read_at')
-                  .eq('user_id', userId)
-                  .in('ticket_id', ticketIds)
-              ]);
-
-            if (!messagesError && !readsError) {
-              const readsByTicketId = {};
-              for (const row of readRows || []) {
-                readsByTicketId[row.ticket_id] = row;
-              }
-
-              const latestIncomingByTicketId = {};
-              for (const row of messageRows || []) {
-                if (row.sender_id === userId) continue;
-                if (!latestIncomingByTicketId[row.ticket_id]) {
-                  latestIncomingByTicketId[row.ticket_id] = row;
-                }
-              }
-
-              support = Object.values(latestIncomingByTicketId).reduce((sum, row) => {
-                const readAt = readsByTicketId[row.ticket_id]?.last_read_at
-                  ? new Date(readsByTicketId[row.ticket_id].last_read_at).getTime()
-                  : 0;
-                const messageAt = row.created_at ? new Date(row.created_at).getTime() : 0;
-                return sum + (messageAt > readAt ? 1 : 0);
-              }, 0);
-            }
-          }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'support_messages' },
+        () => {
+          loadNavCountsForUser(session.user.id, admin);
         }
-
-        if (!cancelled) {
-          setNavCounts({
-            replacementRequests,
-            support
-          });
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'support_message_reads' },
+        () => {
+          loadNavCountsForUser(session.user.id, admin);
         }
-      } catch (error) {
-        console.error('Failed to load sidebar notification counts:', error);
-
-        if (!cancelled) {
-          setNavCounts({
-            replacementRequests: 0,
-            support: 0
-          });
-        }
-      }
-    }
-
-    loadNavCounts();
-
-    const channel = session?.user?.id
-      ? supabase
-          .channel(`app-shell-notifications-${session.user.id}-${admin ? 'admin' : 'agent'}`)
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'lead_replacement_requests' },
-            () => {
-              loadNavCounts();
-            }
-          )
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'support_tickets' },
-            () => {
-              loadNavCounts();
-            }
-          )
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'support_messages' },
-            () => {
-              loadNavCounts();
-            }
-          )
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'support_message_reads' },
-            () => {
-              loadNavCounts();
-            }
-          )
-          .subscribe()
-      : null;
+      )
+      .subscribe();
 
     return () => {
-      cancelled = true;
-      if (channel) {
-        supabase.removeChannel(channel);
-      }
+      window.clearInterval(intervalId);
+      supabase.removeChannel(channel);
     };
   }, [session?.user?.id, admin]);
 
