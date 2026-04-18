@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Navigate } from 'react-router-dom';
-import { supabase, getSessionSafe, waitForSessionSafe } from '../lib/supabaseClient';
+import { supabase, waitForSessionSafe } from '../lib/supabaseClient';
 
 const PROFILE_TIMEOUT_MS = 8000;
 
@@ -23,6 +23,9 @@ export default function ProtectedRoute({ children }) {
   const bootedRef = useRef(false);
   const lastProfileRef = useRef(null);
   const profileLoadIdRef = useRef(0);
+
+  // 🔥 KEY FIX: detect auth callback route
+  const isAuthCallback = window.location.pathname.includes('auth');
 
   async function loadProfileForSession(nextSession, { keepPreviousOnFailure = true } = {}) {
     const loadId = ++profileLoadIdRef.current;
@@ -73,7 +76,8 @@ export default function ProtectedRoute({ children }) {
   useEffect(() => {
     mountedRef.current = true;
 
-    if (bootedRef.current) {
+    // 🔥 CRITICAL FIX: DO NOT RUN AUTH BOOT DURING CALLBACK
+    if (bootedRef.current || isAuthCallback) {
       return () => {
         mountedRef.current = false;
       };
@@ -142,7 +146,7 @@ export default function ProtectedRoute({ children }) {
       mountedRef.current = false;
       authSubscription?.unsubscribe();
     };
-  }, []);
+  }, [isAuthCallback]);
 
   if (authLoading || session === undefined) {
     return <div className="page-center">Loading Momentum X...</div>;
