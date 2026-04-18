@@ -24,6 +24,7 @@ import LeadsAdmin from './pages/admin/LeadsAdmin';
 import ReplacementRequests from './pages/admin/ReplacementRequests';
 import Tiers from './pages/admin/Tiers';
 import Distribution from './pages/admin/Distribution';
+import SupportAdmin from './pages/admin/SupportAdmin';
 import Logs from './pages/admin/Logs';
 
 export default function App() {
@@ -69,6 +70,7 @@ export default function App() {
         <Route path="replacement-requests" element={<ReplacementRequests />} />
         <Route path="tiers" element={<Tiers />} />
         <Route path="distribution" element={<Distribution />} />
+        <Route path="support" element={<SupportAdmin />} />
         <Route path="logs" element={<Logs />} />
       </Route>
 
