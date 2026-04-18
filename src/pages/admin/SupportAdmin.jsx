@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { formatDate } from '../../lib/utils';
 
-function getUnreadCountForTicket(ticketId, messagesByTicket, readsByTicket, currentUserId) {
+function getUnreadCountForTicket(ticketId, messagesByTicket, readsByTicket) {
   const messages = messagesByTicket[ticketId] || [];
   const readAt = readsByTicket[ticketId]?.last_read_at
     ? new Date(readsByTicket[ticketId].last_read_at).getTime()
@@ -11,7 +11,7 @@ function getUnreadCountForTicket(ticketId, messagesByTicket, readsByTicket, curr
 
   return messages.filter((message) => {
     const createdAt = new Date(message.created_at).getTime();
-    return createdAt > readAt && message.sender_id !== currentUserId;
+    return createdAt > readAt && !message.sender_is_admin;
   }).length;
 }
 
@@ -75,22 +75,16 @@ export default function SupportAdmin() {
 
   useEffect(() => {
     async function syncReadForSelectedTicket() {
-      if (!selectedTicketId || !profile?.id) return;
+      if (!selectedTicketId) return;
 
-      const unreadCount = getUnreadCountForTicket(
-        selectedTicketId,
-        messagesByTicket,
-        readsByTicket,
-        profile.id
-      );
-
+      const unreadCount = getUnreadCountForTicket(selectedTicketId, messagesByTicket, readsByTicket);
       if (unreadCount > 0) {
         await markSelectedTicketRead(selectedTicketId);
       }
     }
 
     syncReadForSelectedTicket();
-  }, [selectedTicketId, messagesByTicket, readsByTicket, profile?.id]);
+  }, [selectedTicketId, messagesByTicket, readsByTicket]);
 
   async function load({ silent = false } = {}) {
     if (!silent) {
@@ -120,23 +114,18 @@ export default function SupportAdmin() {
 
     if (ticketsError) {
       console.error('Failed to load admin support tickets:', ticketsError);
-      if (!silent) {
-        setStatusMessage(ticketsError.message || 'Failed to load support tickets.');
-      }
+      if (!silent) setStatusMessage(ticketsError.message || 'Failed to load support tickets.');
       return;
     }
 
     const safeTickets = ticketRows || [];
-
     setProfile(profileRow || null);
     setTickets(safeTickets);
 
     if (!safeTickets.length) {
       setMessagesByTicket({});
       setReadsByTicket({});
-      if (selectedTicketId) {
-        setSelectedTicketId(null);
-      }
+      if (selectedTicketId) setSelectedTicketId(null);
       return;
     }
 
@@ -163,16 +152,12 @@ export default function SupportAdmin() {
 
     if (messagesError) {
       console.error('Failed to load admin support messages:', messagesError);
-      if (!silent) {
-        setStatusMessage(messagesError.message || 'Failed to load support messages.');
-      }
+      if (!silent) setStatusMessage(messagesError.message || 'Failed to load support messages.');
     }
 
     if (readsError) {
       console.error('Failed to load admin support reads:', readsError);
-      if (!silent) {
-        setStatusMessage(readsError.message || 'Failed to load support reads.');
-      }
+      if (!silent) setStatusMessage(readsError.message || 'Failed to load support reads.');
     }
 
     const nextMessagesByTicket = {};
@@ -261,6 +246,7 @@ export default function SupportAdmin() {
       const { error } = await supabase.from('support_messages').insert({
         ticket_id: selectedTicketId,
         sender_id: session.user.id,
+        sender_is_admin: true,
         body: trimmedReply
       });
 
@@ -303,7 +289,10 @@ export default function SupportAdmin() {
               closed_by: null
             };
 
-      const { error } = await supabase.from('support_tickets').update(patch).eq('id', ticket.id);
+      const { error } = await supabase
+        .from('support_tickets')
+        .update(patch)
+        .eq('id', ticket.id);
 
       if (error) throw error;
 
@@ -341,7 +330,7 @@ export default function SupportAdmin() {
   );
 
   function getUnreadCount(ticketId) {
-    return getUnreadCountForTicket(ticketId, messagesByTicket, readsByTicket, profile?.id);
+    return getUnreadCountForTicket(ticketId, messagesByTicket, readsByTicket);
   }
 
   return (
@@ -560,11 +549,10 @@ export default function SupportAdmin() {
                   <div style={{ opacity: 0.75 }}>No messages yet.</div>
                 ) : (
                   selectedMessages.map((message) => {
-                    const isMine = message.sender_id === profile?.id;
-                    const senderName =
-                      message.profiles?.display_name ||
-                      message.profiles?.email ||
-                      (isMine ? 'You' : 'Agent');
+                    const isMine = message.sender_is_admin;
+                    const senderName = message.sender_is_admin
+                      ? 'Admin'
+                      : message.profiles?.display_name || message.profiles?.email || 'Agent';
 
                     return (
                       <div
