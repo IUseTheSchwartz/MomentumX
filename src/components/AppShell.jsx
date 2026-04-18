@@ -1,3 +1,4 @@
+// src/components/AppShell.jsx
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import { useEffect, useRef, useState } from 'react';
@@ -36,12 +37,42 @@ function withTimeout(promise, ms) {
   ]);
 }
 
+function NavBadge({ count }) {
+  if (!count) return null;
+
+  return (
+    <span
+      style={{
+        minWidth: 22,
+        height: 22,
+        padding: '0 7px',
+        borderRadius: 999,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: 12,
+        fontWeight: 800,
+        background: 'rgba(17,217,140,0.18)',
+        border: '1px solid rgba(17,217,140,0.3)',
+        color: '#34d399',
+        lineHeight: 1
+      }}
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
+
 export default function AppShell({ admin = false }) {
   const navigate = useNavigate();
   const links = admin ? adminLinks : agentLinks;
 
   const [session, setSession] = useState(undefined);
   const [profile, setProfile] = useState(null);
+  const [navCounts, setNavCounts] = useState({
+    replacementRequests: 0,
+    support: 0
+  });
 
   const mountedRef = useRef(true);
   const lastProfileRef = useRef(null);
@@ -122,6 +153,10 @@ export default function AppShell({ admin = false }) {
         lastProfileRef.current = null;
         setSession(null);
         setProfile(null);
+        setNavCounts({
+          replacementRequests: 0,
+          support: 0
+        });
         return;
       }
 
@@ -149,6 +184,130 @@ export default function AppShell({ admin = false }) {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadNavCounts() {
+      if (!session?.user?.id) {
+        if (!cancelled) {
+          setNavCounts({
+            replacementRequests: 0,
+            support: 0
+          });
+        }
+        return;
+      }
+
+      const userId = session.user.id;
+
+      try {
+        let replacementRequests = 0;
+
+        if (admin) {
+          const { count, error } = await supabase
+            .from('lead_replacement_requests')
+            .select('id', { count: 'exact', head: true })
+            .eq('status', 'pending');
+
+          if (!error) {
+            replacementRequests = count || 0;
+          }
+        }
+
+        let support = 0;
+
+        const { data: visibleTickets, error: ticketsError } = await supabase
+          .from('support_tickets')
+          .select('id');
+
+        if (!ticketsError) {
+          const ticketIds = (visibleTickets || []).map((row) => row.id).filter(Boolean);
+
+          if (ticketIds.length) {
+            const [{ data: messageRows, error: messagesError }, { data: readRows, error: readsError }] =
+              await Promise.all([
+                supabase
+                  .from('support_messages')
+                  .select('id, ticket_id, sender_id, created_at')
+                  .in('ticket_id', ticketIds),
+                supabase
+                  .from('support_message_reads')
+                  .select('message_id')
+                  .eq('user_id', userId)
+              ]);
+
+            if (!messagesError && !readsError) {
+              const readMessageIds = new Set((readRows || []).map((row) => row.message_id));
+
+              support = (messageRows || []).filter(
+                (row) => row.sender_id !== userId && !readMessageIds.has(row.id)
+              ).length;
+            }
+          }
+        }
+
+        if (!cancelled) {
+          setNavCounts({
+            replacementRequests,
+            support
+          });
+        }
+      } catch (error) {
+        console.error('Failed to load sidebar notification counts:', error);
+
+        if (!cancelled) {
+          setNavCounts({
+            replacementRequests: admin ? navCounts.replacementRequests : 0,
+            support: navCounts.support
+          });
+        }
+      }
+    }
+
+    loadNavCounts();
+
+    const channel = session?.user?.id
+      ? supabase
+          .channel(`app-shell-notifications-${session.user.id}-${admin ? 'admin' : 'agent'}`)
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'lead_replacement_requests' },
+            () => {
+              loadNavCounts();
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'support_tickets' },
+            () => {
+              loadNavCounts();
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'support_messages' },
+            () => {
+              loadNavCounts();
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'support_message_reads' },
+            () => {
+              loadNavCounts();
+            }
+          )
+          .subscribe()
+      : null;
+
+    return () => {
+      cancelled = true;
+      if (channel) {
+        supabase.removeChannel(channel);
+      }
+    };
+  }, [session?.user?.id, admin]);
+
   async function signOut() {
     await supabase.auth.signOut();
     navigate('/', { replace: true });
@@ -165,6 +324,18 @@ export default function AppShell({ admin = false }) {
     if (profile?.is_admin) {
       navigate('/admin/overview');
     }
+  }
+
+  function getBadgeCountForPath(path) {
+    if (path === '/admin/replacement-requests') {
+      return navCounts.replacementRequests;
+    }
+
+    if (path === '/admin/support' || path === '/app/support') {
+      return navCounts.support;
+    }
+
+    return 0;
   }
 
   const canSwitchToAdmin = Boolean(profile?.is_admin);
@@ -204,15 +375,26 @@ export default function AppShell({ admin = false }) {
             overflow: 'auto'
           }}
         >
-          {links.map(([to, label]) => (
-            <NavLink
-              key={to}
-              to={to}
-              className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
-            >
-              {label}
-            </NavLink>
-          ))}
+          {links.map(([to, label]) => {
+            const badgeCount = getBadgeCountForPath(to);
+
+            return (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10
+                }}
+              >
+                <span>{label}</span>
+                <NavBadge count={badgeCount} />
+              </NavLink>
+            );
+          })}
         </nav>
 
         <div
