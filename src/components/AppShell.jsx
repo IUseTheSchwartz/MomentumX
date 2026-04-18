@@ -1,4 +1,3 @@
-// src/components/AppShell.jsx
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import { useEffect, useRef, useState } from 'react';
@@ -27,7 +26,7 @@ const adminLinks = [
 ];
 
 const PROFILE_TIMEOUT_MS = 8000;
-const SUPPORT_REFRESH_INTERVAL_MS = 10000;
+const REFRESH_INTERVAL_MS = 10000;
 
 function withTimeout(promise, ms) {
   return Promise.race([
@@ -72,13 +71,222 @@ export default function AppShell({ admin = false }) {
   const [profile, setProfile] = useState(null);
   const [navCounts, setNavCounts] = useState({
     replacementRequests: 0,
-    support: 0
+    support: 0,
+    requirements: 0
   });
 
   const mountedRef = useRef(true);
   const lastProfileRef = useRef(null);
   const refreshInFlightRef = useRef(false);
   const navRefreshInFlightRef = useRef(false);
+
+  async function loadSupportUnreadCount(userId, isAdmin) {
+    let support = 0;
+
+    const { data: ticketRows, error: ticketsError } = await supabase
+      .from('support_tickets')
+      .select('id');
+
+    if (ticketsError) return 0;
+
+    const ticketIds = (ticketRows || []).map((row) => row.id).filter(Boolean);
+    if (!ticketIds.length) return 0;
+
+    const [{ data: messageRows, error: messagesError }, { data: readRows, error: readsError }] =
+      await Promise.all([
+        supabase
+          .from('support_messages')
+          .select('ticket_id, sender_is_admin, created_at')
+          .in('ticket_id', ticketIds)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('support_message_reads')
+          .select('ticket_id, last_read_at')
+          .eq('user_id', userId)
+          .in('ticket_id', ticketIds)
+      ]);
+
+    if (messagesError || readsError) return 0;
+
+    const readsByTicketId = {};
+    for (const row of readRows || []) {
+      readsByTicketId[row.ticket_id] = row;
+    }
+
+    const latestIncomingByTicketId = {};
+    for (const row of messageRows || []) {
+      const isIncomingForThisShell = isAdmin ? !row.sender_is_admin : row.sender_is_admin;
+      if (!isIncomingForThisShell) continue;
+      if (!latestIncomingByTicketId[row.ticket_id]) {
+        latestIncomingByTicketId[row.ticket_id] = row;
+      }
+    }
+
+    support = Object.values(latestIncomingByTicketId).reduce((sum, row) => {
+      const readAt = readsByTicketId[row.ticket_id]?.last_read_at
+        ? new Date(readsByTicketId[row.ticket_id].last_read_at).getTime()
+        : 0;
+      const messageAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+      return sum + (messageAt > readAt ? 1 : 0);
+    }, 0);
+
+    return support;
+  }
+
+  async function loadRequirementsUnreadCount(userId, isAdmin) {
+    if (isAdmin) {
+      const [
+        { data: recs, error: recsError },
+        { data: vids, error: vidsError },
+        { data: proofs, error: proofsError },
+        { data: noteRows, error: notesError },
+        { data: noteReadRows, error: noteReadsError },
+        { data: recordingReadRows, error: recordingReadsError },
+        { data: videoReadRows, error: videoReadsError },
+        { data: proofReadRows, error: proofReadsError }
+      ] = await Promise.all([
+        supabase.from('lead_recordings').select('id, agent_id, created_at'),
+        supabase.from('agent_videos').select('id, agent_id, created_at'),
+        supabase.from('lead_pack_proofs').select('id, agent_id, created_at'),
+        supabase.from('recording_notes').select('recording_id, sender_is_admin, created_at'),
+        supabase
+          .from('recording_note_reads')
+          .select('recording_id, last_read_at')
+          .eq('user_id', userId),
+        supabase
+          .from('admin_requirement_recording_reads')
+          .select('agent_id, last_read_at')
+          .eq('user_id', userId),
+        supabase
+          .from('admin_requirement_video_reads')
+          .select('agent_id, last_read_at')
+          .eq('user_id', userId),
+        supabase
+          .from('admin_requirement_proof_reads')
+          .select('agent_id, last_read_at')
+          .eq('user_id', userId)
+      ]);
+
+      if (
+        recsError ||
+        vidsError ||
+        proofsError ||
+        notesError ||
+        noteReadsError ||
+        recordingReadsError ||
+        videoReadsError ||
+        proofReadsError
+      ) {
+        return 0;
+      }
+
+      const recordingReadByAgent = {};
+      for (const row of recordingReadRows || []) {
+        recordingReadByAgent[row.agent_id] = row.last_read_at
+          ? new Date(row.last_read_at).getTime()
+          : 0;
+      }
+
+      const videoReadByAgent = {};
+      for (const row of videoReadRows || []) {
+        videoReadByAgent[row.agent_id] = row.last_read_at ? new Date(row.last_read_at).getTime() : 0;
+      }
+
+      const proofReadByAgent = {};
+      for (const row of proofReadRows || []) {
+        proofReadByAgent[row.agent_id] = row.last_read_at ? new Date(row.last_read_at).getTime() : 0;
+      }
+
+      const noteReadByRecording = {};
+      for (const row of noteReadRows || []) {
+        noteReadByRecording[row.recording_id] = row.last_read_at
+          ? new Date(row.last_read_at).getTime()
+          : 0;
+      }
+
+      const recordingToAgent = {};
+      const countsByAgent = {};
+
+      for (const row of recs || []) {
+        if (!row.agent_id) continue;
+        recordingToAgent[row.id] = row.agent_id;
+        const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+        const readAt = recordingReadByAgent[row.agent_id] || 0;
+        if (createdAt > readAt) {
+          countsByAgent[row.agent_id] = (countsByAgent[row.agent_id] || 0) + 1;
+        }
+      }
+
+      for (const row of vids || []) {
+        if (!row.agent_id) continue;
+        const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+        const readAt = videoReadByAgent[row.agent_id] || 0;
+        if (createdAt > readAt) {
+          countsByAgent[row.agent_id] = (countsByAgent[row.agent_id] || 0) + 1;
+        }
+      }
+
+      for (const row of proofs || []) {
+        if (!row.agent_id) continue;
+        const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+        const readAt = proofReadByAgent[row.agent_id] || 0;
+        if (createdAt > readAt) {
+          countsByAgent[row.agent_id] = (countsByAgent[row.agent_id] || 0) + 1;
+        }
+      }
+
+      for (const row of noteRows || []) {
+        if (row.sender_is_admin) continue;
+        const agentId = recordingToAgent[row.recording_id];
+        if (!agentId) continue;
+        const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+        const readAt = noteReadByRecording[row.recording_id] || 0;
+        if (createdAt > readAt) {
+          countsByAgent[agentId] = (countsByAgent[agentId] || 0) + 1;
+        }
+      }
+
+      return Object.values(countsByAgent).filter((count) => count > 0).length;
+    }
+
+    const { data: ownRecordings, error: ownRecordingsError } = await supabase
+      .from('lead_recordings')
+      .select('id')
+      .eq('agent_id', userId);
+
+    if (ownRecordingsError) return 0;
+
+    const recordingIds = (ownRecordings || []).map((row) => row.id).filter(Boolean);
+    if (!recordingIds.length) return 0;
+
+    const [{ data: noteRows, error: notesError }, { data: readRows, error: readsError }] =
+      await Promise.all([
+        supabase
+          .from('recording_notes')
+          .select('recording_id, sender_is_admin, created_at')
+          .in('recording_id', recordingIds),
+        supabase
+          .from('recording_note_reads')
+          .select('recording_id, last_read_at')
+          .eq('user_id', userId)
+          .in('recording_id', recordingIds)
+      ]);
+
+    if (notesError || readsError) return 0;
+
+    const readByRecording = {};
+    for (const row of readRows || []) {
+      readByRecording[row.recording_id] = row.last_read_at
+        ? new Date(row.last_read_at).getTime()
+        : 0;
+    }
+
+    return (noteRows || []).filter((row) => {
+      const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+      const readAt = readByRecording[row.recording_id] || 0;
+      return row.sender_is_admin && createdAt > readAt;
+    }).length;
+  }
 
   async function loadNavCountsForUser(userId, isAdmin) {
     if (!userId || navRefreshInFlightRef.current) return;
@@ -98,60 +306,16 @@ export default function AppShell({ admin = false }) {
         }
       }
 
-      let support = 0;
-
-      const { data: ticketRows, error: ticketsError } = await supabase
-        .from('support_tickets')
-        .select('id');
-
-      if (!ticketsError) {
-        const ticketIds = (ticketRows || []).map((row) => row.id).filter(Boolean);
-
-        if (ticketIds.length) {
-          const [{ data: messageRows, error: messagesError }, { data: readRows, error: readsError }] =
-            await Promise.all([
-              supabase
-                .from('support_messages')
-                .select('ticket_id, sender_is_admin, created_at')
-                .in('ticket_id', ticketIds)
-                .order('created_at', { ascending: false }),
-              supabase
-                .from('support_message_reads')
-                .select('ticket_id, last_read_at')
-                .eq('user_id', userId)
-                .in('ticket_id', ticketIds)
-            ]);
-
-          if (!messagesError && !readsError) {
-            const readsByTicketId = {};
-            for (const row of readRows || []) {
-              readsByTicketId[row.ticket_id] = row;
-            }
-
-            const latestIncomingByTicketId = {};
-            for (const row of messageRows || []) {
-              const isIncomingForThisShell = isAdmin ? !row.sender_is_admin : row.sender_is_admin;
-              if (!isIncomingForThisShell) continue;
-              if (!latestIncomingByTicketId[row.ticket_id]) {
-                latestIncomingByTicketId[row.ticket_id] = row;
-              }
-            }
-
-            support = Object.values(latestIncomingByTicketId).reduce((sum, row) => {
-              const readAt = readsByTicketId[row.ticket_id]?.last_read_at
-                ? new Date(readsByTicketId[row.ticket_id].last_read_at).getTime()
-                : 0;
-              const messageAt = row.created_at ? new Date(row.created_at).getTime() : 0;
-              return sum + (messageAt > readAt ? 1 : 0);
-            }, 0);
-          }
-        }
-      }
+      const [support, requirements] = await Promise.all([
+        loadSupportUnreadCount(userId, isAdmin),
+        loadRequirementsUnreadCount(userId, isAdmin)
+      ]);
 
       if (mountedRef.current) {
         setNavCounts({
           replacementRequests,
-          support
+          support,
+          requirements
         });
       }
     } catch (error) {
@@ -172,7 +336,8 @@ export default function AppShell({ admin = false }) {
         setProfile(null);
         setNavCounts({
           replacementRequests: 0,
-          support: 0
+          support: 0,
+          requirements: 0
         });
         return;
       }
@@ -246,7 +411,8 @@ export default function AppShell({ admin = false }) {
         setProfile(null);
         setNavCounts({
           replacementRequests: 0,
-          support: 0
+          support: 0,
+          requirements: 0
         });
         return;
       }
@@ -282,7 +448,7 @@ export default function AppShell({ admin = false }) {
 
     const intervalId = window.setInterval(() => {
       loadNavCountsForUser(session.user.id, admin);
-    }, SUPPORT_REFRESH_INTERVAL_MS);
+    }, REFRESH_INTERVAL_MS);
 
     const channel = supabase
       .channel(`app-shell-notifications-${session.user.id}-${admin ? 'admin' : 'agent'}`)
@@ -304,6 +470,46 @@ export default function AppShell({ admin = false }) {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'support_message_reads' },
+        () => loadNavCountsForUser(session.user.id, admin)
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'lead_recordings' },
+        () => loadNavCountsForUser(session.user.id, admin)
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'agent_videos' },
+        () => loadNavCountsForUser(session.user.id, admin)
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'lead_pack_proofs' },
+        () => loadNavCountsForUser(session.user.id, admin)
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'recording_notes' },
+        () => loadNavCountsForUser(session.user.id, admin)
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'recording_note_reads' },
+        () => loadNavCountsForUser(session.user.id, admin)
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'admin_requirement_recording_reads' },
+        () => loadNavCountsForUser(session.user.id, admin)
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'admin_requirement_video_reads' },
+        () => loadNavCountsForUser(session.user.id, admin)
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'admin_requirement_proof_reads' },
         () => loadNavCountsForUser(session.user.id, admin)
       )
       .subscribe();
@@ -339,6 +545,10 @@ export default function AppShell({ admin = false }) {
 
     if (path === '/admin/support' || path === '/app/support') {
       return navCounts.support;
+    }
+
+    if (path === '/admin/agents-requirements' || path === '/app/requirements') {
+      return navCounts.requirements;
     }
 
     return 0;
