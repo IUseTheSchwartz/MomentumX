@@ -89,7 +89,7 @@ function buildChecklist(agent) {
   const monthStart = getMonthStart(new Date());
   const rules = getTierRules(agent.tierName);
 
-  const recordingsThisWeek = countSince(agent.recordings, weekStart);
+  const recordingsThisWeek = countSince(agent.recordings, weekStart, 'recorded_for_date');
   const videosThisWeek = countSince(agent.videos, weekStart);
   const proofsThisMonth = countSince(agent.proofs, monthStart);
 
@@ -117,12 +117,13 @@ function groupRecordings(rows, view) {
   const grouped = new Map();
 
   for (const row of rows || []) {
+    const source = row.recorded_for_date || row.created_at;
     const key =
       view === 'daily'
-        ? getLocalDateKey(row.created_at)
+        ? getLocalDateKey(source)
         : view === 'weekly'
-          ? getWeekKey(row.created_at)
-          : getMonthKey(row.created_at);
+          ? getWeekKey(source)
+          : getMonthKey(source);
 
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(row);
@@ -133,7 +134,9 @@ function groupRecordings(rows, view) {
     .map(([key, items]) => ({
       key,
       items: items.sort(
-        (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+        (a, b) =>
+          new Date(b.recorded_for_date || b.created_at || 0).getTime() -
+          new Date(a.recorded_for_date || a.created_at || 0).getTime()
       )
     }));
 }
@@ -341,6 +344,95 @@ function Modal({ open, title, children, onClose, controls }) {
   );
 }
 
+function NoteBubble({ note, currentUserId }) {
+  const isMine = note.sender_id === currentUserId;
+  const senderName =
+    note.profiles?.display_name || note.profiles?.email || (isMine ? 'You' : 'Agent');
+
+  return (
+    <div
+      style={{
+        alignSelf: isMine ? 'flex-end' : 'flex-start',
+        maxWidth: '78%',
+        padding: 12,
+        borderRadius: 16,
+        border: '1px solid rgba(255,255,255,0.08)',
+        background: isMine ? 'rgba(17,217,140,0.10)' : 'rgba(255,255,255,0.03)'
+      }}
+    >
+      <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>{senderName}</div>
+      <div style={{ whiteSpace: 'pre-wrap' }}>{note.body}</div>
+      <div style={{ fontSize: 12, opacity: 0.6, marginTop: 8 }}>{formatDate(note.created_at)}</div>
+    </div>
+  );
+}
+
+function RecordingNotesPanel({
+  recording,
+  notes,
+  currentUserId,
+  draft,
+  setDraft,
+  sending,
+  onSend
+}) {
+  return (
+    <div
+      className="glass"
+      style={{
+        padding: 14,
+        border: '1px solid rgba(255,255,255,0.08)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12
+      }}
+    >
+      <div>
+        <div style={{ fontSize: 18, fontWeight: 800 }}>Notes</div>
+        <div style={{ fontSize: 13, opacity: 0.75, marginTop: 4 }}>
+          {recording.file_name || 'Recording'} · {formatDate(recording.recorded_for_date || recording.created_at)}
+        </div>
+      </div>
+
+      <div
+        style={{
+          minHeight: 160,
+          maxHeight: 320,
+          overflow: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+          paddingRight: 4
+        }}
+      >
+        {!notes.length ? (
+          <div style={{ opacity: 0.75 }}>No notes yet.</div>
+        ) : (
+          notes.map((note) => <NoteBubble key={note.id} note={note} currentUserId={currentUserId} />)
+        )}
+      </div>
+
+      <form onSubmit={onSend}>
+        <label>
+          Reply
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="Type your note..."
+            rows={4}
+          />
+        </label>
+
+        <div className="top-gap">
+          <button className="btn btn-primary" type="submit" disabled={sending}>
+            {sending ? 'Sending...' : 'Send Note'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 export default function AgentsRequirements() {
   const [agents, setAgents] = useState([]);
   const [search, setSearch] = useState('');
@@ -353,6 +445,13 @@ export default function AgentsRequirements() {
   const [proofsView, setProofsView] = useState('monthly');
   const [kpiView, setKpiView] = useState('weekly');
 
+  const [currentUserId, setCurrentUserId] = useState(null);
+  const [notesByRecording, setNotesByRecording] = useState({});
+  const [readsByRecording, setReadsByRecording] = useState({});
+  const [activeRecordingForNotes, setActiveRecordingForNotes] = useState(null);
+  const [recordingNoteDraft, setRecordingNoteDraft] = useState('');
+  const [sendingRecordingNote, setSendingRecordingNote] = useState(false);
+
   useEffect(() => {
     load();
   }, []);
@@ -360,25 +459,22 @@ export default function AgentsRequirements() {
   async function load() {
     setLoading(true);
 
-    const [
-      { data: profiles },
-      { data: recs },
-      { data: vids },
-      { data: proofs },
-      { data: kpi }
-    ] = await Promise.all([
-      supabase
-        .from('profiles')
-        .select('id, display_name, email, tiers(id, name)')
-        .order('display_name'),
-      supabase
-        .from('lead_recordings')
-        .select('*, leads(first_name,last_name,phone)')
-        .order('created_at', { ascending: false }),
-      supabase.from('agent_videos').select('*').order('created_at', { ascending: false }),
-      supabase.from('lead_pack_proofs').select('*').order('created_at', { ascending: false }),
-      supabase.from('kpi_entries').select('*').order('entry_date', { ascending: false })
-    ]);
+    const {
+      data: { session }
+    } = await supabase.auth.getSession();
+
+    if (session) {
+      setCurrentUserId(session.user.id);
+    }
+
+    const [{ data: profiles }, { data: recs }, { data: vids }, { data: proofs }, { data: kpi }] =
+      await Promise.all([
+        supabase.from('profiles').select('id, display_name, email, tiers(id, name)').order('display_name'),
+        supabase.from('lead_recordings').select('*, leads(first_name,last_name,phone)').order('created_at', { ascending: false }),
+        supabase.from('agent_videos').select('*').order('created_at', { ascending: false }),
+        supabase.from('lead_pack_proofs').select('*').order('created_at', { ascending: false }),
+        supabase.from('kpi_entries').select('*').order('entry_date', { ascending: false })
+      ]);
 
     const grouped = (profiles || []).map((agent) => ({
       ...agent,
@@ -390,6 +486,44 @@ export default function AgentsRequirements() {
     }));
 
     setAgents(grouped);
+
+    const recordingIds = (recs || []).map((row) => row.id);
+
+    if (recordingIds.length && session?.user?.id) {
+      const [{ data: noteRows }, { data: readRows }] = await Promise.all([
+        supabase
+          .from('recording_notes')
+          .select('*, profiles!recording_notes_sender_id_fkey(id, display_name, email, is_admin)')
+          .in('recording_id', recordingIds)
+          .order('created_at', { ascending: true }),
+        supabase
+          .from('recording_note_reads')
+          .select('*')
+          .eq('user_id', session.user.id)
+          .in('recording_id', recordingIds)
+      ]);
+
+      const nextNotesByRecording = {};
+      for (const id of recordingIds) {
+        nextNotesByRecording[id] = [];
+      }
+      for (const row of noteRows || []) {
+        if (!nextNotesByRecording[row.recording_id]) nextNotesByRecording[row.recording_id] = [];
+        nextNotesByRecording[row.recording_id].push(row);
+      }
+
+      const nextReadsByRecording = {};
+      for (const row of readRows || []) {
+        nextReadsByRecording[row.recording_id] = row;
+      }
+
+      setNotesByRecording(nextNotesByRecording);
+      setReadsByRecording(nextReadsByRecording);
+    } else {
+      setNotesByRecording({});
+      setReadsByRecording({});
+    }
+
     setLoading(false);
   }
 
@@ -424,11 +558,90 @@ export default function AgentsRequirements() {
 
   function openModal(agentId, type) {
     setActiveModal({ agentId, type });
+    setActiveRecordingForNotes(null);
+    setRecordingNoteDraft('');
   }
 
   function closeModal() {
     setActiveModal(null);
+    setActiveRecordingForNotes(null);
+    setRecordingNoteDraft('');
   }
+
+  function getUnreadCount(recordingId) {
+    const notes = notesByRecording[recordingId] || [];
+    const readAt = readsByRecording[recordingId]?.last_read_at
+      ? new Date(readsByRecording[recordingId].last_read_at).getTime()
+      : 0;
+
+    return notes.filter((note) => {
+      const createdAt = new Date(note.created_at).getTime();
+      return createdAt > readAt && note.sender_id !== currentUserId;
+    }).length;
+  }
+
+  async function markRecordingRead(recordingId) {
+    if (!recordingId || !currentUserId) return;
+
+    const nowIso = new Date().toISOString();
+
+    const { error } = await supabase.from('recording_note_reads').upsert(
+      {
+        recording_id: recordingId,
+        user_id: currentUserId,
+        last_read_at: nowIso
+      },
+      { onConflict: 'recording_id,user_id' }
+    );
+
+    if (!error) {
+      setReadsByRecording((prev) => ({
+        ...prev,
+        [recordingId]: {
+          recording_id: recordingId,
+          user_id: currentUserId,
+          last_read_at: nowIso
+        }
+      }));
+    }
+  }
+
+  async function openRecordingNotes(recording) {
+    setActiveRecordingForNotes(recording);
+    setRecordingNoteDraft('');
+    await markRecordingRead(recording.id);
+  }
+
+  async function sendRecordingNote(e) {
+    e.preventDefault();
+
+    const trimmed = recordingNoteDraft.trim();
+    if (!activeRecordingForNotes || !trimmed || !currentUserId) return;
+
+    setSendingRecordingNote(true);
+
+    try {
+      const { error } = await supabase.from('recording_notes').insert({
+        recording_id: activeRecordingForNotes.id,
+        sender_id: currentUserId,
+        body: trimmed
+      });
+
+      if (error) throw error;
+
+      setRecordingNoteDraft('');
+      await markRecordingRead(activeRecordingForNotes.id);
+      await load();
+    } catch (error) {
+      console.error('Failed to send recording note:', error);
+    } finally {
+      setSendingRecordingNote(false);
+    }
+  }
+
+  const activeRecordingNotes = activeRecordingForNotes
+    ? notesByRecording[activeRecordingForNotes.id] || []
+    : [];
 
   return (
     <div
@@ -685,53 +898,78 @@ export default function AgentsRequirements() {
             No recordings found.
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {groupedRecordings.map((group) => (
-              <div
-                key={group.key}
-                className="glass"
-                style={{ padding: 14, border: '1px solid rgba(255,255,255,0.08)' }}
-              >
-                <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 10 }}>
-                  {recordingsView === 'weekly'
-                    ? `Week of ${formatDate(group.key)}`
-                    : formatDate(group.key)}{' '}
-                  · {group.items.length}
-                </div>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: activeRecordingForNotes ? 'minmax(0, 1.4fr) minmax(340px, 0.9fr)' : '1fr',
+              gap: 14
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {groupedRecordings.map((group) => (
+                <div
+                  key={group.key}
+                  className="glass"
+                  style={{ padding: 14, border: '1px solid rgba(255,255,255,0.08)' }}
+                >
+                  <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 10 }}>
+                    {recordingsView === 'weekly'
+                      ? `Week of ${formatDate(group.key)}`
+                      : formatDate(group.key)}{' '}
+                    · {group.items.length}
+                  </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {group.items.map((item) => {
-                    const leadName = item.leads
-                      ? `${item.leads.first_name || ''} ${item.leads.last_name || ''}`.trim()
-                      : '';
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {group.items.map((item) => {
+                      const leadName = item.leads
+                        ? `${item.leads.first_name || ''} ${item.leads.last_name || ''}`.trim()
+                        : '';
+                      const unreadCount = getUnreadCount(item.id);
+                      const totalNotes = (notesByRecording[item.id] || []).length;
 
-                    return (
-                      <div
-                        key={item.id}
-                        style={{
-                          padding: 12,
-                          borderRadius: 12,
-                          border: '1px solid rgba(255,255,255,0.08)'
-                        }}
-                      >
-                        <div style={{ fontWeight: 700 }}>
-                          {leadName || item.leads?.phone || 'No lead attached'}
+                      return (
+                        <div
+                          key={item.id}
+                          style={{
+                            padding: 12,
+                            borderRadius: 12,
+                            border: '1px solid rgba(255,255,255,0.08)'
+                          }}
+                        >
+                          <div style={{ fontWeight: 700 }}>
+                            {leadName || item.leads?.phone || (item.uploaded_manually ? 'Manual upload' : 'No lead attached')}
+                          </div>
+                          <div style={{ fontSize: 13, opacity: 0.75, margin: '4px 0 8px' }}>
+                            {item.file_name || 'Recording'} · {formatDate(item.recorded_for_date || item.created_at)}
+                          </div>
+                          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                            <a href={item.recording_url} target="_blank" rel="noreferrer">
+                              Open
+                            </a>
+                            <audio controls preload="none" src={item.recording_url} style={{ maxWidth: 280 }} />
+                            <button type="button" className="btn btn-ghost btn-small" onClick={() => openRecordingNotes(item)}>
+                              Notes {totalNotes > 0 ? `(${totalNotes})` : ''}{unreadCount > 0 ? ` • ${unreadCount} new` : ''}
+                            </button>
+                          </div>
                         </div>
-                        <div style={{ fontSize: 13, opacity: 0.75, margin: '4px 0 8px' }}>
-                          {item.file_name || 'Recording'} · {formatDate(item.created_at)}
-                        </div>
-                        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-                          <a href={item.recording_url} target="_blank" rel="noreferrer">
-                            Open
-                          </a>
-                          <audio controls preload="none" src={item.recording_url} style={{ maxWidth: 280 }} />
-                        </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
+
+            {activeRecordingForNotes ? (
+              <RecordingNotesPanel
+                recording={activeRecordingForNotes}
+                notes={activeRecordingNotes}
+                currentUserId={currentUserId}
+                draft={recordingNoteDraft}
+                setDraft={setRecordingNoteDraft}
+                sending={sendingRecordingNote}
+                onSend={sendRecordingNote}
+              />
+            ) : null}
           </div>
         )}
       </Modal>
