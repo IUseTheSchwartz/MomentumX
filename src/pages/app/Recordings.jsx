@@ -18,11 +18,7 @@ const ALLOWED_AUDIO_TYPES = [
 function matchesSearch(row, query) {
   if (!query) return true;
 
-  const text = [
-    row.file_name,
-    row.leads?.first_name,
-    row.leads?.last_name
-  ]
+  const text = [row.file_name, row.leads?.first_name, row.leads?.last_name]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
@@ -61,6 +57,138 @@ function getSafeFileName(file) {
   return raw.replace(/[^a-zA-Z0-9._-]/g, '-');
 }
 
+function NoteBubble({ note, currentUserId }) {
+  const isMine = note.sender_id === currentUserId;
+  const senderName =
+    note.profiles?.display_name || note.profiles?.email || (isMine ? 'You' : 'Admin');
+
+  return (
+    <div
+      style={{
+        alignSelf: isMine ? 'flex-end' : 'flex-start',
+        maxWidth: '78%',
+        padding: 12,
+        borderRadius: 16,
+        border: '1px solid rgba(255,255,255,0.08)',
+        background: isMine ? 'rgba(17,217,140,0.10)' : 'rgba(255,255,255,0.03)'
+      }}
+    >
+      <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>{senderName}</div>
+      <div style={{ whiteSpace: 'pre-wrap' }}>{note.body}</div>
+      <div style={{ fontSize: 12, opacity: 0.6, marginTop: 8 }}>{formatDate(note.created_at)}</div>
+    </div>
+  );
+}
+
+function NotesModal({
+  open,
+  onClose,
+  recording,
+  notes,
+  currentUserId,
+  noteDraft,
+  setNoteDraft,
+  sendingNote,
+  onSend
+}) {
+  if (!open || !recording) return null;
+
+  return (
+    <div
+      className="modal-backdrop"
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.65)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 20,
+        zIndex: 1000
+      }}
+    >
+      <div
+        className="modal glass"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 'min(900px, 96vw)',
+          maxHeight: '88vh',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+          padding: 0
+        }}
+      >
+        <div
+          style={{
+            padding: 18,
+            borderBottom: '1px solid rgba(255,255,255,0.08)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            gap: 12,
+            alignItems: 'center',
+            flexWrap: 'wrap'
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 22, fontWeight: 800 }}>Recording Notes</div>
+            <div style={{ fontSize: 13, opacity: 0.75, marginTop: 4 }}>
+              {recording.file_name || 'Recording'} · {formatDate(recording.recorded_for_date || recording.created_at)}
+            </div>
+          </div>
+
+          <button type="button" className="btn btn-ghost" onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        <div
+          style={{
+            padding: 18,
+            overflow: 'auto',
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10
+          }}
+        >
+          {!notes.length ? (
+            <div style={{ opacity: 0.75 }}>No notes yet.</div>
+          ) : (
+            notes.map((note) => <NoteBubble key={note.id} note={note} currentUserId={currentUserId} />)
+          )}
+        </div>
+
+        <form
+          onSubmit={onSend}
+          style={{
+            padding: 18,
+            borderTop: '1px solid rgba(255,255,255,0.08)'
+          }}
+        >
+          <label>
+            Message
+            <textarea
+              value={noteDraft}
+              onChange={(e) => setNoteDraft(e.target.value)}
+              placeholder="Type your note..."
+              rows={4}
+            />
+          </label>
+
+          <div className="top-gap">
+            <button className="btn btn-primary" type="submit" disabled={sendingNote}>
+              {sendingNote ? 'Sending...' : 'Send Note'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export default function Recordings() {
   const [rows, setRows] = useState([]);
   const [view, setView] = useState('daily');
@@ -71,6 +199,13 @@ export default function Recordings() {
   const [statusMessage, setStatusMessage] = useState('');
   const [recordedForDate, setRecordedForDate] = useState(new Date().toISOString().slice(0, 10));
   const [audioFile, setAudioFile] = useState(null);
+
+  const [currentUserId, setCurrentUserId] = useState(null);
+  const [notesByRecording, setNotesByRecording] = useState({});
+  const [readsByRecording, setReadsByRecording] = useState({});
+  const [activeRecording, setActiveRecording] = useState(null);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [sendingNote, setSendingNote] = useState(false);
 
   const fileInputRef = useRef(null);
 
@@ -85,13 +220,129 @@ export default function Recordings() {
 
     if (!session) return;
 
-    const { data } = await supabase
+    setCurrentUserId(session.user.id);
+
+    const { data: recordings } = await supabase
       .from('lead_recordings')
       .select('*, leads(first_name,last_name)')
       .eq('agent_id', session.user.id)
       .order('created_at', { ascending: false });
 
-    setRows(data || []);
+    const safeRows = recordings || [];
+    setRows(safeRows);
+
+    if (!safeRows.length) {
+      setNotesByRecording({});
+      setReadsByRecording({});
+      return;
+    }
+
+    const recordingIds = safeRows.map((row) => row.id);
+
+    const [{ data: noteRows }, { data: readRows }] = await Promise.all([
+      supabase
+        .from('recording_notes')
+        .select('*, profiles!recording_notes_sender_id_fkey(id, display_name, email, is_admin)')
+        .in('recording_id', recordingIds)
+        .order('created_at', { ascending: true }),
+      supabase
+        .from('recording_note_reads')
+        .select('*')
+        .eq('user_id', session.user.id)
+        .in('recording_id', recordingIds)
+    ]);
+
+    const nextNotesByRecording = {};
+    for (const row of safeRows) {
+      nextNotesByRecording[row.id] = [];
+    }
+    for (const row of noteRows || []) {
+      if (!nextNotesByRecording[row.recording_id]) nextNotesByRecording[row.recording_id] = [];
+      nextNotesByRecording[row.recording_id].push(row);
+    }
+
+    const nextReadsByRecording = {};
+    for (const row of readRows || []) {
+      nextReadsByRecording[row.recording_id] = row;
+    }
+
+    setNotesByRecording(nextNotesByRecording);
+    setReadsByRecording(nextReadsByRecording);
+  }
+
+  async function markRecordingRead(recordingId) {
+    if (!recordingId || !currentUserId) return;
+
+    const nowIso = new Date().toISOString();
+
+    const { error } = await supabase.from('recording_note_reads').upsert(
+      {
+        recording_id: recordingId,
+        user_id: currentUserId,
+        last_read_at: nowIso
+      },
+      { onConflict: 'recording_id,user_id' }
+    );
+
+    if (!error) {
+      setReadsByRecording((prev) => ({
+        ...prev,
+        [recordingId]: {
+          recording_id: recordingId,
+          user_id: currentUserId,
+          last_read_at: nowIso
+        }
+      }));
+    }
+  }
+
+  async function openNotes(recording) {
+    setActiveRecording(recording);
+    setNoteDraft('');
+    await markRecordingRead(recording.id);
+  }
+
+  async function handleSendNote(e) {
+    e.preventDefault();
+    setStatusMessage('');
+
+    const trimmed = noteDraft.trim();
+    if (!activeRecording || !trimmed || !currentUserId) {
+      return;
+    }
+
+    setSendingNote(true);
+
+    try {
+      const { error } = await supabase.from('recording_notes').insert({
+        recording_id: activeRecording.id,
+        sender_id: currentUserId,
+        body: trimmed
+      });
+
+      if (error) throw error;
+
+      setNoteDraft('');
+      await markRecordingRead(activeRecording.id);
+      await load();
+    } catch (error) {
+      console.error('Failed to send note:', error);
+      setStatusMessage(error.message || 'Failed to send note.');
+    } finally {
+      setSendingNote(false);
+    }
+  }
+
+  function getUnreadCount(recordingId) {
+    const notes = notesByRecording[recordingId] || [];
+    const readAt = readsByRecording[recordingId]?.last_read_at
+      ? new Date(readsByRecording[recordingId].last_read_at).getTime()
+      : 0;
+
+    return notes.filter((note) => {
+      const createdAt = new Date(note.created_at).getTime();
+      return createdAt > readAt && note.sender_id !== currentUserId;
+    }).length;
   }
 
   async function handleUpload(e) {
@@ -129,22 +380,15 @@ export default function Recordings() {
       const safeName = getSafeFileName(audioFile);
       const storagePath = `${session.user.id}/${Date.now()}-${safeName}`;
 
-      const { error: uploadError } = await supabase.storage
-        .from(bucketName)
-        .upload(storagePath, audioFile, {
-          cacheControl: '3600',
-          upsert: false,
-          contentType: audioFile.type || 'audio/mpeg'
-        });
+      const { error: uploadError } = await supabase.storage.from(bucketName).upload(storagePath, audioFile, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType: audioFile.type || 'audio/mpeg'
+      });
 
-      if (uploadError) {
-        throw uploadError;
-      }
+      if (uploadError) throw uploadError;
 
-      const { data: publicUrlData } = supabase.storage
-        .from(bucketName)
-        .getPublicUrl(storagePath);
-
+      const { data: publicUrlData } = supabase.storage.from(bucketName).getPublicUrl(storagePath);
       const recordingUrl = publicUrlData?.publicUrl || null;
 
       if (!recordingUrl) {
@@ -160,9 +404,7 @@ export default function Recordings() {
         uploaded_manually: true
       });
 
-      if (insertError) {
-        throw insertError;
-      }
+      if (insertError) throw insertError;
 
       setAudioFile(null);
       if (fileInputRef.current) {
@@ -232,11 +474,27 @@ export default function Recordings() {
       render: (v, row) => formatDate(v || row.created_at)
     },
     {
+      key: 'notes',
+      label: 'Notes',
+      render: (_v, row) => {
+        const unreadCount = getUnreadCount(row.id);
+        const totalCount = (notesByRecording[row.id] || []).length;
+
+        return (
+          <button type="button" className="btn btn-ghost btn-small" onClick={() => openNotes(row)}>
+            Notes {totalCount > 0 ? `(${totalCount})` : ''}{unreadCount > 0 ? ` • ${unreadCount} new` : ''}
+          </button>
+        );
+      }
+    },
+    {
       key: 'created_at',
       label: 'Uploaded',
       render: (v) => formatDate(v)
     }
   ];
+
+  const activeNotes = activeRecording ? notesByRecording[activeRecording.id] || [] : [];
 
   return (
     <div
@@ -278,11 +536,7 @@ export default function Recordings() {
         >
           <label>
             Search
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Lead or file name..."
-            />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Lead or file name..." />
           </label>
 
           <label>
@@ -315,11 +569,7 @@ export default function Recordings() {
           >
             <label>
               Recording Date
-              <input
-                type="date"
-                value={recordedForDate}
-                onChange={(e) => setRecordedForDate(e.target.value)}
-              />
+              <input type="date" value={recordedForDate} onChange={(e) => setRecordedForDate(e.target.value)} />
             </label>
 
             <label>
@@ -338,11 +588,7 @@ export default function Recordings() {
               {uploading ? 'Uploading...' : 'Upload Recording'}
             </button>
 
-            {audioFile ? (
-              <div style={{ fontSize: 14, opacity: 0.8 }}>
-                Selected: {audioFile.name}
-              </div>
-            ) : null}
+            {audioFile ? <div style={{ fontSize: 14, opacity: 0.8 }}>Selected: {audioFile.name}</div> : null}
           </div>
         </form>
       </div>
@@ -363,6 +609,18 @@ export default function Recordings() {
       >
         <DataTable columns={columns} rows={visibleRows} />
       </div>
+
+      <NotesModal
+        open={!!activeRecording}
+        onClose={() => setActiveRecording(null)}
+        recording={activeRecording}
+        notes={activeNotes}
+        currentUserId={currentUserId}
+        noteDraft={noteDraft}
+        setNoteDraft={setNoteDraft}
+        sendingNote={sendingNote}
+        onSend={handleSendNote}
+      />
     </div>
   );
 }
