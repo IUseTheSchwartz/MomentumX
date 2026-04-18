@@ -125,7 +125,7 @@ export default function Recordings() {
         return;
       }
 
-      const bucketName = 'lead-recordings';
+      const bucketName = 'recordings';
       const safeName = getSafeFileName(audioFile);
       const storagePath = `${session.user.id}/${Date.now()}-${safeName}`;
 
