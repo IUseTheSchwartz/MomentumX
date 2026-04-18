@@ -120,6 +120,21 @@ export default function ReplacementRequests() {
 
   useEffect(() => {
     load();
+
+    const channel = supabase
+      .channel('admin-replacement-requests-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'lead_replacement_requests' },
+        () => {
+          load();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   function getDraft(requestId) {
