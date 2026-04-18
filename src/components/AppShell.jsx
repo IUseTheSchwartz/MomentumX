@@ -1,3 +1,4 @@
+// src/components/AppShell.jsx
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import { useEffect, useRef, useState } from 'react';
@@ -26,7 +27,7 @@ const adminLinks = [
 ];
 
 const PROFILE_TIMEOUT_MS = 8000;
-const SUPPORT_REFRESH_INTERVAL_MS = 15000;
+const SUPPORT_REFRESH_INTERVAL_MS = 10000;
 
 function withTimeout(promise, ms) {
   return Promise.race([
@@ -81,7 +82,6 @@ export default function AppShell({ admin = false }) {
 
   async function loadNavCountsForUser(userId, isAdmin) {
     if (!userId || navRefreshInFlightRef.current) return;
-
     navRefreshInFlightRef.current = true;
 
     try {
@@ -112,7 +112,7 @@ export default function AppShell({ admin = false }) {
             await Promise.all([
               supabase
                 .from('support_messages')
-                .select('ticket_id, sender_id, created_at')
+                .select('ticket_id, sender_is_admin, created_at')
                 .in('ticket_id', ticketIds)
                 .order('created_at', { ascending: false }),
               supabase
@@ -130,7 +130,8 @@ export default function AppShell({ admin = false }) {
 
             const latestIncomingByTicketId = {};
             for (const row of messageRows || []) {
-              if (row.sender_id === userId) continue;
+              const isIncomingForThisShell = isAdmin ? !row.sender_is_admin : row.sender_is_admin;
+              if (!isIncomingForThisShell) continue;
               if (!latestIncomingByTicketId[row.ticket_id]) {
                 latestIncomingByTicketId[row.ticket_id] = row;
               }
@@ -203,7 +204,6 @@ export default function AppShell({ admin = false }) {
         } else {
           setProfile(null);
         }
-
         await loadNavCountsForUser(nextSession.user.id, admin);
         return;
       }
@@ -289,30 +289,22 @@ export default function AppShell({ admin = false }) {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'lead_replacement_requests' },
-        () => {
-          loadNavCountsForUser(session.user.id, admin);
-        }
+        () => loadNavCountsForUser(session.user.id, admin)
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'support_tickets' },
-        () => {
-          loadNavCountsForUser(session.user.id, admin);
-        }
+        () => loadNavCountsForUser(session.user.id, admin)
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'support_messages' },
-        () => {
-          loadNavCountsForUser(session.user.id, admin);
-        }
+        () => loadNavCountsForUser(session.user.id, admin)
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'support_message_reads' },
-        () => {
-          loadNavCountsForUser(session.user.id, admin);
-        }
+        () => loadNavCountsForUser(session.user.id, admin)
       )
       .subscribe();
 
