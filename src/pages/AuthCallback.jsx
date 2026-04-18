@@ -1,7 +1,11 @@
 // src/pages/AuthCallback.jsx
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { supabase } from '../lib/supabaseClient';
+import {
+  supabase,
+  getSessionSafe,
+  waitForSessionSafe
+} from '../lib/supabaseClient';
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -62,29 +66,13 @@ function hasFreshOAuthReturn() {
   );
 }
 
-async function waitForStableSession({ timeoutMs = 6000, intervalMs = 250 } = {}) {
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const {
-      data: { session }
-    } = await supabase.auth.getSession();
-
-    if (session) return session;
-
-    await delay(intervalMs);
-  }
-
-  return null;
-}
-
 async function waitForProviderToken({ timeoutMs = 3500, intervalMs = 200 } = {}) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
     const {
       data: { session }
-    } = await supabase.auth.getSession();
+    } = await getSessionSafe();
 
     if (session?.provider_token) return session;
 
@@ -136,7 +124,10 @@ export default function AuthCallback() {
 
         setMessage('Completing login...');
 
-        const session = await waitForStableSession();
+        const session = await waitForSessionSafe({
+          timeoutMs: 6000,
+          intervalMs: 250
+        });
 
         if (!active) return;
 
@@ -167,8 +158,6 @@ export default function AuthCallback() {
 
         const providerToken = tokenSession.provider_token;
 
-        // Fallback for browsers/devices where provider_token does not come through.
-        // If the user already has an approved profile, let them in.
         if (!providerToken) {
           setMessage('Finishing login...');
 
@@ -191,8 +180,6 @@ export default function AuthCallback() {
             return;
           }
 
-          // No provider token AND no existing approved profile:
-          // this is likely a true first-login browser issue, so send back home.
           setMessage('Discord login did not finish correctly. Please try again.');
           await supabase.auth.signOut();
 
@@ -260,7 +247,7 @@ export default function AuthCallback() {
 
         const {
           data: { session: refreshedSession }
-        } = await supabase.auth.getSession();
+        } = await getSessionSafe();
 
         if (!active) return;
 
@@ -288,7 +275,7 @@ export default function AuthCallback() {
       }
     }
 
-    run();
+    void run();
 
     return () => {
       active = false;
