@@ -1,6 +1,19 @@
-import { useEffect, useMemo, useState } from 'react';
+// src/pages/admin/SupportAdmin.jsx
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { formatDate } from '../../lib/utils';
+
+function getUnreadCountForTicket(ticketId, messagesByTicket, readsByTicket, currentUserId) {
+  const messages = messagesByTicket[ticketId] || [];
+  const readAt = readsByTicket[ticketId]?.last_read_at
+    ? new Date(readsByTicket[ticketId].last_read_at).getTime()
+    : 0;
+
+  return messages.filter((message) => {
+    const createdAt = new Date(message.created_at).getTime();
+    return createdAt > readAt && message.sender_id !== currentUserId;
+  }).length;
+}
 
 export default function SupportAdmin() {
   const [profile, setProfile] = useState(null);
@@ -14,6 +27,9 @@ export default function SupportAdmin() {
   const [statusFilter, setStatusFilter] = useState('open');
   const [search, setSearch] = useState('');
 
+  const currentUserIdRef = useRef(null);
+  const markingReadRef = useRef(false);
+
   useEffect(() => {
     load();
   }, []);
@@ -24,8 +40,62 @@ export default function SupportAdmin() {
     }
   }, [tickets, selectedTicketId]);
 
-  async function load() {
-    setStatusMessage('');
+  useEffect(() => {
+    if (!profile?.id) return;
+
+    const channel = supabase
+      .channel(`admin-support-${profile.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'support_tickets' },
+        () => {
+          load({ silent: true });
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'support_messages' },
+        () => {
+          load({ silent: true });
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'support_message_reads' },
+        () => {
+          load({ silent: true });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [profile?.id]);
+
+  useEffect(() => {
+    async function syncReadForSelectedTicket() {
+      if (!selectedTicketId || !profile?.id) return;
+
+      const unreadCount = getUnreadCountForTicket(
+        selectedTicketId,
+        messagesByTicket,
+        readsByTicket,
+        profile.id
+      );
+
+      if (unreadCount > 0) {
+        await markSelectedTicketRead(selectedTicketId);
+      }
+    }
+
+    syncReadForSelectedTicket();
+  }, [selectedTicketId, messagesByTicket, readsByTicket, profile?.id]);
+
+  async function load({ silent = false } = {}) {
+    if (!silent) {
+      setStatusMessage('');
+    }
 
     const {
       data: { session }
@@ -33,13 +103,28 @@ export default function SupportAdmin() {
 
     if (!session) return;
 
-    const [{ data: profileRow }, { data: ticketRows }] = await Promise.all([
-      supabase.from('profiles').select('*').eq('id', session.user.id).maybeSingle(),
-      supabase
-        .from('support_tickets')
-        .select('*, profiles!support_tickets_agent_id_fkey(id, display_name, email)')
-        .order('updated_at', { ascending: false })
-    ]);
+    currentUserIdRef.current = session.user.id;
+
+    const [{ data: profileRow, error: profileError }, { data: ticketRows, error: ticketsError }] =
+      await Promise.all([
+        supabase.from('profiles').select('*').eq('id', session.user.id).maybeSingle(),
+        supabase
+          .from('support_tickets')
+          .select('*, profiles!support_tickets_agent_id_fkey(id, display_name, email)')
+          .order('updated_at', { ascending: false })
+      ]);
+
+    if (profileError) {
+      console.error('Failed to load admin support profile:', profileError);
+    }
+
+    if (ticketsError) {
+      console.error('Failed to load admin support tickets:', ticketsError);
+      if (!silent) {
+        setStatusMessage(ticketsError.message || 'Failed to load support tickets.');
+      }
+      return;
+    }
 
     const safeTickets = ticketRows || [];
 
@@ -49,23 +134,46 @@ export default function SupportAdmin() {
     if (!safeTickets.length) {
       setMessagesByTicket({});
       setReadsByTicket({});
+      if (selectedTicketId) {
+        setSelectedTicketId(null);
+      }
       return;
+    }
+
+    const stillExists = safeTickets.some((ticket) => ticket.id === selectedTicketId);
+    if (!stillExists && safeTickets[0]?.id) {
+      setSelectedTicketId(safeTickets[0].id);
     }
 
     const ticketIds = safeTickets.map((ticket) => ticket.id);
 
-    const [{ data: messageRows }, { data: readRows }] = await Promise.all([
-      supabase
-        .from('support_messages')
-        .select('*, profiles!support_messages_sender_id_fkey(id, display_name, email, is_admin)')
-        .in('ticket_id', ticketIds)
-        .order('created_at', { ascending: true }),
-      supabase
-        .from('support_message_reads')
-        .select('*')
-        .eq('user_id', session.user.id)
-        .in('ticket_id', ticketIds)
-    ]);
+    const [{ data: messageRows, error: messagesError }, { data: readRows, error: readsError }] =
+      await Promise.all([
+        supabase
+          .from('support_messages')
+          .select('*, profiles!support_messages_sender_id_fkey(id, display_name, email, is_admin)')
+          .in('ticket_id', ticketIds)
+          .order('created_at', { ascending: true }),
+        supabase
+          .from('support_message_reads')
+          .select('*')
+          .eq('user_id', session.user.id)
+          .in('ticket_id', ticketIds)
+      ]);
+
+    if (messagesError) {
+      console.error('Failed to load admin support messages:', messagesError);
+      if (!silent) {
+        setStatusMessage(messagesError.message || 'Failed to load support messages.');
+      }
+    }
+
+    if (readsError) {
+      console.error('Failed to load admin support reads:', readsError);
+      if (!silent) {
+        setStatusMessage(readsError.message || 'Failed to load support reads.');
+      }
+    }
 
     const nextMessagesByTicket = {};
     for (const ticket of safeTickets) {
@@ -89,36 +197,36 @@ export default function SupportAdmin() {
   }
 
   async function markSelectedTicketRead(ticketId) {
-    if (!ticketId) return;
+    if (!ticketId || !currentUserIdRef.current || markingReadRef.current) return;
 
-    const {
-      data: { session }
-    } = await supabase.auth.getSession();
+    markingReadRef.current = true;
 
-    if (!session) return;
+    try {
+      const nowIso = new Date().toISOString();
 
-    const nowIso = new Date().toISOString();
-
-    const { error } = await supabase
-      .from('support_message_reads')
-      .upsert(
+      const { error } = await supabase.from('support_message_reads').upsert(
         {
           ticket_id: ticketId,
-          user_id: session.user.id,
+          user_id: currentUserIdRef.current,
           last_read_at: nowIso
         },
         { onConflict: 'ticket_id,user_id' }
       );
 
-    if (!error) {
-      setReadsByTicket((prev) => ({
-        ...prev,
-        [ticketId]: {
-          ticket_id: ticketId,
-          user_id: session.user.id,
-          last_read_at: nowIso
-        }
-      }));
+      if (!error) {
+        setReadsByTicket((prev) => ({
+          ...prev,
+          [ticketId]: {
+            ticket_id: ticketId,
+            user_id: currentUserIdRef.current,
+            last_read_at: nowIso
+          }
+        }));
+      } else {
+        console.error('Failed to mark admin support ticket read:', error);
+      }
+    } finally {
+      markingReadRef.current = false;
     }
   }
 
@@ -160,7 +268,7 @@ export default function SupportAdmin() {
 
       setReplyDraft('');
       await markSelectedTicketRead(selectedTicketId);
-      await load();
+      await load({ silent: true });
     } catch (error) {
       console.error('Failed to send support reply:', error);
       setStatusMessage(error.message || 'Failed to send message.');
@@ -195,14 +303,11 @@ export default function SupportAdmin() {
               closed_by: null
             };
 
-      const { error } = await supabase
-        .from('support_tickets')
-        .update(patch)
-        .eq('id', ticket.id);
+      const { error } = await supabase.from('support_tickets').update(patch).eq('id', ticket.id);
 
       if (error) throw error;
 
-      await load();
+      await load({ silent: true });
     } catch (error) {
       console.error('Failed to update support ticket:', error);
       setStatusMessage(error.message || 'Failed to update ticket.');
@@ -213,11 +318,7 @@ export default function SupportAdmin() {
     return tickets.filter((ticket) => {
       if (statusFilter !== 'all' && ticket.status !== statusFilter) return false;
 
-      const text = [
-        ticket.subject,
-        ticket.profiles?.display_name,
-        ticket.profiles?.email
-      ]
+      const text = [ticket.subject, ticket.profiles?.display_name, ticket.profiles?.email]
         .filter(Boolean)
         .join(' ')
         .toLowerCase();
@@ -227,7 +328,10 @@ export default function SupportAdmin() {
   }, [tickets, statusFilter, search]);
 
   const selectedTicket = useMemo(
-    () => filteredTickets.find((ticket) => ticket.id === selectedTicketId) || tickets.find((ticket) => ticket.id === selectedTicketId) || null,
+    () =>
+      filteredTickets.find((ticket) => ticket.id === selectedTicketId) ||
+      tickets.find((ticket) => ticket.id === selectedTicketId) ||
+      null,
     [filteredTickets, tickets, selectedTicketId]
   );
 
@@ -237,15 +341,7 @@ export default function SupportAdmin() {
   );
 
   function getUnreadCount(ticketId) {
-    const messages = messagesByTicket[ticketId] || [];
-    const readAt = readsByTicket[ticketId]?.last_read_at
-      ? new Date(readsByTicket[ticketId].last_read_at).getTime()
-      : 0;
-
-    return messages.filter((message) => {
-      const createdAt = new Date(message.created_at).getTime();
-      return createdAt > readAt && message.sender_id !== profile?.id;
-    }).length;
+    return getUnreadCountForTicket(ticketId, messagesByTicket, readsByTicket, profile?.id);
   }
 
   return (
@@ -346,10 +442,10 @@ export default function SupportAdmin() {
                     padding: 12,
                     border: isActive
                       ? '1px solid rgba(17,217,140,0.45)'
-                      : '1px solid rgba(255,255,255,0.08)',
-                    background: isActive
-                      ? 'rgba(17,217,140,0.08)'
-                      : undefined,
+                      : unreadCount > 0
+                        ? '1px solid rgba(17,217,140,0.25)'
+                        : '1px solid rgba(255,255,255,0.08)',
+                    background: isActive ? 'rgba(17,217,140,0.08)' : undefined,
                     cursor: 'pointer'
                   }}
                 >
