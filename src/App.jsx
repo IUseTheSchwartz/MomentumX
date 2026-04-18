@@ -13,6 +13,7 @@ import Leads from './pages/app/Leads';
 import KPI from './pages/app/KPI';
 import Requirements from './pages/app/Requirements';
 import Recordings from './pages/app/Recordings';
+import Scripts from './pages/app/Scripts';
 import BookOfBusiness from './pages/app/BookOfBusiness';
 import Support from './pages/app/Support';
 
@@ -47,6 +48,7 @@ export default function App() {
         <Route path="kpi" element={<KPI />} />
         <Route path="requirements" element={<Requirements />} />
         <Route path="recordings" element={<Recordings />} />
+        <Route path="scripts" element={<Scripts />} />
         <Route path="book" element={<BookOfBusiness />} />
         <Route path="support" element={<Support />} />
       </Route>
