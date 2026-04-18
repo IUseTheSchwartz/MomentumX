@@ -1,4 +1,3 @@
-// src/pages/admin/AgentsRequirements.jsx
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { currency, formatDate } from '../../lib/utils';
@@ -240,7 +239,10 @@ function SummaryBox({ title, value, subtext, onClick, badgeCount = 0 }) {
       style={{
         padding: 14,
         textAlign: 'left',
-        border: badgeCount > 0 ? '1px solid rgba(17,217,140,0.28)' : '1px solid rgba(255,255,255,0.08)',
+        border:
+          badgeCount > 0
+            ? '1px solid rgba(17,217,140,0.28)'
+            : '1px solid rgba(255,255,255,0.08)',
         cursor: 'pointer',
         display: 'flex',
         flexDirection: 'column',
@@ -370,20 +372,21 @@ function Modal({ open, title, children, onClose, controls }) {
   );
 }
 
-function NoteBubble({ note, currentUserId }) {
-  const isMine = note.sender_id === currentUserId;
-  const senderName =
-    note.sender_profile?.display_name || note.sender_profile?.email || (isMine ? 'You' : 'Agent');
+function NoteBubble({ note }) {
+  const isAdmin = Boolean(note.sender_is_admin);
+  const senderName = isAdmin
+    ? 'Admin'
+    : note.sender_profile?.display_name || note.sender_profile?.email || 'Agent';
 
   return (
     <div
       style={{
-        alignSelf: isMine ? 'flex-end' : 'flex-start',
+        alignSelf: isAdmin ? 'flex-end' : 'flex-start',
         maxWidth: '78%',
         padding: 12,
         borderRadius: 16,
         border: '1px solid rgba(255,255,255,0.08)',
-        background: isMine ? 'rgba(17,217,140,0.10)' : 'rgba(255,255,255,0.03)'
+        background: isAdmin ? 'rgba(17,217,140,0.10)' : 'rgba(255,255,255,0.03)'
       }}
     >
       <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>{senderName}</div>
@@ -396,7 +399,6 @@ function NoteBubble({ note, currentUserId }) {
 function RecordingNotesPanel({
   recording,
   notes,
-  currentUserId,
   draft,
   setDraft,
   sending,
@@ -416,7 +418,8 @@ function RecordingNotesPanel({
       <div>
         <div style={{ fontSize: 18, fontWeight: 800 }}>Notes</div>
         <div style={{ fontSize: 13, opacity: 0.75, marginTop: 4 }}>
-          {recording.file_name || 'Recording'} · {formatDate(recording.recorded_for_date || recording.created_at)}
+          {recording.file_name || 'Recording'} ·{' '}
+          {formatDate(recording.recorded_for_date || recording.created_at)}
         </div>
       </div>
 
@@ -434,7 +437,7 @@ function RecordingNotesPanel({
         {!notes.length ? (
           <div style={{ opacity: 0.75 }}>No notes yet.</div>
         ) : (
-          notes.map((note) => <NoteBubble key={note.id} note={note} currentUserId={currentUserId} />)
+          notes.map((note) => <NoteBubble key={note.id} note={note} />)
         )}
       </div>
 
@@ -499,6 +502,9 @@ export default function AgentsRequirements() {
   const [currentUserId, setCurrentUserId] = useState(null);
   const [notesByRecording, setNotesByRecording] = useState({});
   const [readsByRecording, setReadsByRecording] = useState({});
+  const [recordingReadsByAgent, setRecordingReadsByAgent] = useState({});
+  const [videoReadsByAgent, setVideoReadsByAgent] = useState({});
+  const [proofReadsByAgent, setProofReadsByAgent] = useState({});
   const [activeRecordingForNotes, setActiveRecordingForNotes] = useState(null);
   const [recordingNoteDraft, setRecordingNoteDraft] = useState('');
   const [sendingRecordingNote, setSendingRecordingNote] = useState(false);
@@ -514,23 +520,42 @@ export default function AgentsRequirements() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'lead_recordings' },
-        () => {
-          load();
-        }
+        () => load()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'agent_videos' },
+        () => load()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'lead_pack_proofs' },
+        () => load()
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'recording_notes' },
-        () => {
-          load();
-        }
+        () => load()
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'recording_note_reads' },
-        () => {
-          load();
-        }
+        () => load()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'admin_requirement_recording_reads' },
+        () => load()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'admin_requirement_video_reads' },
+        () => load()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'admin_requirement_proof_reads' },
+        () => load()
       )
       .subscribe();
 
@@ -550,7 +575,7 @@ export default function AgentsRequirements() {
       await Promise.all([
         supabase
           .from('recording_notes')
-          .select('id, recording_id, sender_id, body, created_at')
+          .select('id, recording_id, sender_id, sender_is_admin, body, created_at')
           .in('recording_id', recordingIds)
           .order('created_at', { ascending: true }),
         supabase
@@ -572,7 +597,9 @@ export default function AgentsRequirements() {
       setReadsByRecording({});
     }
 
-    const senderIds = Array.from(new Set((noteRows || []).map((row) => row.sender_id).filter(Boolean)));
+    const senderIds = Array.from(
+      new Set((noteRows || []).map((row) => row.sender_id).filter(Boolean))
+    );
 
     const { data: senderProfiles, error: senderProfilesError } = senderIds.length
       ? await supabase.from('profiles').select('id, display_name, email').in('id', senderIds)
@@ -612,6 +639,56 @@ export default function AgentsRequirements() {
     setReadsByRecording(nextReadsByRecording);
   }
 
+  async function loadCollectionReads(agentIds, userId) {
+    if (!agentIds.length || !userId) {
+      setRecordingReadsByAgent({});
+      setVideoReadsByAgent({});
+      setProofReadsByAgent({});
+      return;
+    }
+
+    const [
+      { data: recordingReadRows },
+      { data: videoReadRows },
+      { data: proofReadRows }
+    ] = await Promise.all([
+      supabase
+        .from('admin_requirement_recording_reads')
+        .select('agent_id, last_read_at')
+        .eq('user_id', userId)
+        .in('agent_id', agentIds),
+      supabase
+        .from('admin_requirement_video_reads')
+        .select('agent_id, last_read_at')
+        .eq('user_id', userId)
+        .in('agent_id', agentIds),
+      supabase
+        .from('admin_requirement_proof_reads')
+        .select('agent_id, last_read_at')
+        .eq('user_id', userId)
+        .in('agent_id', agentIds)
+    ]);
+
+    const nextRecordingReads = {};
+    for (const row of recordingReadRows || []) {
+      nextRecordingReads[row.agent_id] = row;
+    }
+
+    const nextVideoReads = {};
+    for (const row of videoReadRows || []) {
+      nextVideoReads[row.agent_id] = row;
+    }
+
+    const nextProofReads = {};
+    for (const row of proofReadRows || []) {
+      nextProofReads[row.agent_id] = row;
+    }
+
+    setRecordingReadsByAgent(nextRecordingReads);
+    setVideoReadsByAgent(nextVideoReads);
+    setProofReadsByAgent(nextProofReads);
+  }
+
   async function load() {
     setLoading(true);
 
@@ -625,8 +702,14 @@ export default function AgentsRequirements() {
 
       const [{ data: profiles }, { data: recs }, { data: vids }, { data: proofs }, { data: kpi }] =
         await Promise.all([
-          supabase.from('profiles').select('id, display_name, email, tiers(id, name)').order('display_name'),
-          supabase.from('lead_recordings').select('*, leads(first_name,last_name,phone)').order('created_at', { ascending: false }),
+          supabase
+            .from('profiles')
+            .select('id, display_name, email, tiers(id, name)')
+            .order('display_name'),
+          supabase
+            .from('lead_recordings')
+            .select('*, leads(first_name,last_name,phone)')
+            .order('created_at', { ascending: false }),
           supabase.from('agent_videos').select('*').order('created_at', { ascending: false }),
           supabase.from('lead_pack_proofs').select('*').order('created_at', { ascending: false }),
           supabase.from('kpi_entries').select('*').order('entry_date', { ascending: false })
@@ -644,18 +727,26 @@ export default function AgentsRequirements() {
       setAgents(grouped);
 
       const recordingIds = (recs || []).map((row) => row.id).filter(Boolean);
-      await loadRecordingNotesState(recordingIds, userId);
+      const agentIds = (profiles || []).map((row) => row.id).filter(Boolean);
+
+      await Promise.all([
+        loadRecordingNotesState(recordingIds, userId),
+        loadCollectionReads(agentIds, userId)
+      ]);
     } catch (error) {
       console.error('Failed to load agents requirements:', error);
       setAgents([]);
       setNotesByRecording({});
       setReadsByRecording({});
+      setRecordingReadsByAgent({});
+      setVideoReadsByAgent({});
+      setProofReadsByAgent({});
     } finally {
       setLoading(false);
     }
   }
 
-  function getUnreadCount(recordingId) {
+  function getRecordingNoteUnreadCount(recordingId) {
     const notes = notesByRecording[recordingId] || [];
     const readAt = readsByRecording[recordingId]?.last_read_at
       ? new Date(readsByRecording[recordingId].last_read_at).getTime()
@@ -663,21 +754,83 @@ export default function AgentsRequirements() {
 
     return notes.filter((note) => {
       const createdAt = new Date(note.created_at).getTime();
-      return createdAt > readAt && note.sender_id !== currentUserId;
+      return createdAt > readAt && !note.sender_is_admin;
     }).length;
   }
 
-  function getAgentRecordingUnreadCount(agent) {
-    return (agent.recordings || []).reduce((sum, recording) => sum + getUnreadCount(recording.id), 0);
+  function getAgentRecordingNoteUnreadCount(agent) {
+    return (agent.recordings || []).reduce(
+      (sum, recording) => sum + getRecordingNoteUnreadCount(recording.id),
+      0
+    );
+  }
+
+  function getAgentRecordingUploadUnreadCount(agent) {
+    const readAt = recordingReadsByAgent[agent.id]?.last_read_at
+      ? new Date(recordingReadsByAgent[agent.id].last_read_at).getTime()
+      : 0;
+
+    return (agent.recordings || []).filter((row) => {
+      const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+      return createdAt > readAt;
+    }).length;
+  }
+
+  function getAgentVideoUnreadCount(agent) {
+    const readAt = videoReadsByAgent[agent.id]?.last_read_at
+      ? new Date(videoReadsByAgent[agent.id].last_read_at).getTime()
+      : 0;
+
+    return (agent.videos || []).filter((row) => {
+      const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+      return createdAt > readAt;
+    }).length;
+  }
+
+  function getAgentProofUnreadCount(agent) {
+    const readAt = proofReadsByAgent[agent.id]?.last_read_at
+      ? new Date(proofReadsByAgent[agent.id].last_read_at).getTime()
+      : 0;
+
+    return (agent.proofs || []).filter((row) => {
+      const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+      return createdAt > readAt;
+    }).length;
+  }
+
+  function getAgentTotalUnreadCount(agent) {
+    return (
+      getAgentVideoUnreadCount(agent) +
+      getAgentProofUnreadCount(agent) +
+      getAgentRecordingUploadUnreadCount(agent) +
+      getAgentRecordingNoteUnreadCount(agent)
+    );
   }
 
   const filteredAgents = useMemo(() => {
-    return agents.filter((agent) => {
+    const result = agents.filter((agent) => {
       if (!matchesSearch(agent, search)) return false;
-      if (notificationsOnly && getAgentRecordingUnreadCount(agent) <= 0) return false;
+      if (notificationsOnly && getAgentTotalUnreadCount(agent) <= 0) return false;
       return true;
     });
-  }, [agents, search, notificationsOnly, readsByRecording, notesByRecording, currentUserId]);
+
+    result.sort((a, b) => {
+      const unreadDiff = getAgentTotalUnreadCount(b) - getAgentTotalUnreadCount(a);
+      if (unreadDiff !== 0) return unreadDiff;
+      return String(a.display_name || a.email || '').localeCompare(String(b.display_name || b.email || ''));
+    });
+
+    return result;
+  }, [
+    agents,
+    search,
+    notificationsOnly,
+    readsByRecording,
+    notesByRecording,
+    recordingReadsByAgent,
+    videoReadsByAgent,
+    proofReadsByAgent
+  ]);
 
   const selectedAgent = useMemo(() => {
     if (!activeModal?.agentId) return null;
@@ -704,10 +857,63 @@ export default function AgentsRequirements() {
     return groupKpi(selectedAgent.kpi, kpiView);
   }, [selectedAgent, activeModal, kpiView]);
 
-  function openModal(agentId, type) {
+  async function markCollectionRead(table, agentId) {
+    if (!agentId || !currentUserId) return;
+
+    const nowIso = new Date().toISOString();
+
+    const payload = {
+      agent_id: agentId,
+      user_id: currentUserId,
+      last_read_at: nowIso
+    };
+
+    const tableName =
+      table === 'recordings'
+        ? 'admin_requirement_recording_reads'
+        : table === 'videos'
+          ? 'admin_requirement_video_reads'
+          : 'admin_requirement_proof_reads';
+
+    const { error } = await supabase.from(tableName).upsert(payload, {
+      onConflict: 'agent_id,user_id'
+    });
+
+    if (error) {
+      console.error(`Failed to mark ${table} read:`, error);
+      return;
+    }
+
+    if (table === 'recordings') {
+      setRecordingReadsByAgent((prev) => ({
+        ...prev,
+        [agentId]: payload
+      }));
+    }
+
+    if (table === 'videos') {
+      setVideoReadsByAgent((prev) => ({
+        ...prev,
+        [agentId]: payload
+      }));
+    }
+
+    if (table === 'proofs') {
+      setProofReadsByAgent((prev) => ({
+        ...prev,
+        [agentId]: payload
+      }));
+    }
+  }
+
+  async function openModal(agentId, type) {
     setActiveModal({ agentId, type });
     setActiveRecordingForNotes(null);
     setRecordingNoteDraft('');
+
+    if (type === 'recordings' || type === 'videos' || type === 'proofs') {
+      await markCollectionRead(type, agentId);
+    }
   }
 
   function closeModal() {
@@ -762,6 +968,7 @@ export default function AgentsRequirements() {
       const { error } = await supabase.from('recording_notes').insert({
         recording_id: activeRecordingForNotes.id,
         sender_id: currentUserId,
+        sender_is_admin: true,
         body: trimmed
       });
 
@@ -866,7 +1073,14 @@ export default function AgentsRequirements() {
         {filteredAgents.map((agent) => {
           const expanded = expandedAgentId === agent.id;
           const checklist = buildChecklist(agent);
-          const recordingUnreadCount = getAgentRecordingUnreadCount(agent);
+
+          const videoUnreadCount = getAgentVideoUnreadCount(agent);
+          const proofUnreadCount = getAgentProofUnreadCount(agent);
+          const recordingUploadUnreadCount = getAgentRecordingUploadUnreadCount(agent);
+          const recordingNoteUnreadCount = getAgentRecordingNoteUnreadCount(agent);
+          const recordingsBadgeCount = recordingUploadUnreadCount + recordingNoteUnreadCount;
+          const totalUnreadCount =
+            videoUnreadCount + proofUnreadCount + recordingUploadUnreadCount + recordingNoteUnreadCount;
 
           return (
             <div
@@ -875,7 +1089,7 @@ export default function AgentsRequirements() {
               style={{
                 padding: 16,
                 border:
-                  recordingUnreadCount > 0
+                  totalUnreadCount > 0
                     ? '1px solid rgba(17,217,140,0.22)'
                     : expanded
                       ? '1px solid rgba(255,255,255,0.12)'
@@ -892,9 +1106,17 @@ export default function AgentsRequirements() {
                 }}
               >
                 <div>
-                  <div style={{ fontSize: 20, fontWeight: 800, display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div
+                    style={{
+                      fontSize: 20,
+                      fontWeight: 800,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10
+                    }}
+                  >
                     {agent.display_name || 'Unnamed Agent'}
-                    <UnreadPill count={recordingUnreadCount} />
+                    <UnreadPill count={totalUnreadCount} />
                   </div>
                   <div style={{ opacity: 0.75, fontSize: 14 }}>
                     {agent.email || 'No email'} · {agent.tierName}
@@ -974,6 +1196,7 @@ export default function AgentsRequirements() {
                       value={agent.videos.length}
                       subtext="Open reels by week or month"
                       onClick={() => openModal(agent.id, 'videos')}
+                      badgeCount={videoUnreadCount}
                     />
 
                     <SummaryBox
@@ -981,7 +1204,7 @@ export default function AgentsRequirements() {
                       value={agent.recordings.length}
                       subtext="Open recordings by day, week, or month"
                       onClick={() => openModal(agent.id, 'recordings')}
-                      badgeCount={recordingUnreadCount}
+                      badgeCount={recordingsBadgeCount}
                     />
 
                     <SummaryBox
@@ -989,6 +1212,7 @@ export default function AgentsRequirements() {
                       value={agent.proofs.length}
                       subtext="Open uploaded screenshots"
                       onClick={() => openModal(agent.id, 'proofs')}
+                      badgeCount={proofUnreadCount}
                     />
 
                     <SummaryBox
@@ -1029,7 +1253,10 @@ export default function AgentsRequirements() {
                 style={{ padding: 14, border: '1px solid rgba(255,255,255,0.08)' }}
               >
                 <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 10 }}>
-                  {videosView === 'weekly' ? `Week of ${formatDate(group.key)}` : formatDate(group.key)} · {group.items.length}
+                  {videosView === 'weekly'
+                    ? `Week of ${formatDate(group.key)}`
+                    : formatDate(group.key)}{' '}
+                  · {group.items.length}
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1077,7 +1304,9 @@ export default function AgentsRequirements() {
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: activeRecordingForNotes ? 'minmax(0, 1.4fr) minmax(340px, 0.9fr)' : '1fr',
+              gridTemplateColumns: activeRecordingForNotes
+                ? 'minmax(0, 1.4fr) minmax(340px, 0.9fr)'
+                : '1fr',
               gap: 14
             }}
           >
@@ -1100,7 +1329,7 @@ export default function AgentsRequirements() {
                       const leadName = item.leads
                         ? `${item.leads.first_name || ''} ${item.leads.last_name || ''}`.trim()
                         : '';
-                      const unreadCount = getUnreadCount(item.id);
+                      const unreadCount = getRecordingNoteUnreadCount(item.id);
                       const totalNotes = (notesByRecording[item.id] || []).length;
 
                       return (
@@ -1126,22 +1355,42 @@ export default function AgentsRequirements() {
                             }}
                           >
                             <span>
-                              {leadName || item.leads?.phone || (item.uploaded_manually ? 'Manual upload' : 'No lead attached')}
+                              {leadName ||
+                                item.leads?.phone ||
+                                (item.uploaded_manually ? 'Manual upload' : 'No lead attached')}
                             </span>
                             <UnreadPill count={unreadCount} />
                           </div>
 
                           <div style={{ fontSize: 13, opacity: 0.75, margin: '4px 0 8px' }}>
-                            {item.file_name || 'Recording'} · {formatDate(item.recorded_for_date || item.created_at)}
+                            {item.file_name || 'Recording'} ·{' '}
+                            {formatDate(item.recorded_for_date || item.created_at)}
                           </div>
 
-                          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <div
+                            style={{
+                              display: 'flex',
+                              gap: 12,
+                              flexWrap: 'wrap',
+                              alignItems: 'center'
+                            }}
+                          >
                             <a href={item.recording_url} target="_blank" rel="noreferrer">
                               Open
                             </a>
-                            <audio controls preload="none" src={item.recording_url} style={{ maxWidth: 280 }} />
-                            <button type="button" className="btn btn-ghost btn-small" onClick={() => openRecordingNotes(item)}>
-                              Notes {totalNotes > 0 ? `(${totalNotes})` : ''}{unreadCount > 0 ? ` • ${unreadCount} new` : ''}
+                            <audio
+                              controls
+                              preload="none"
+                              src={item.recording_url}
+                              style={{ maxWidth: 280 }}
+                            />
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-small"
+                              onClick={() => openRecordingNotes(item)}
+                            >
+                              Notes {totalNotes > 0 ? `(${totalNotes})` : ''}
+                              {unreadCount > 0 ? ` • ${unreadCount} new` : ''}
                             </button>
                           </div>
                         </div>
@@ -1156,7 +1405,6 @@ export default function AgentsRequirements() {
               <RecordingNotesPanel
                 recording={activeRecordingForNotes}
                 notes={activeRecordingNotes}
-                currentUserId={currentUserId}
                 draft={recordingNoteDraft}
                 setDraft={setRecordingNoteDraft}
                 sending={sendingRecordingNote}
@@ -1191,7 +1439,10 @@ export default function AgentsRequirements() {
                 style={{ padding: 14, border: '1px solid rgba(255,255,255,0.08)' }}
               >
                 <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 10 }}>
-                  {proofsView === 'weekly' ? `Week of ${formatDate(group.key)}` : formatDate(group.key)} · {group.items.length}
+                  {proofsView === 'weekly'
+                    ? `Week of ${formatDate(group.key)}`
+                    : formatDate(group.key)}{' '}
+                  · {group.items.length}
                 </div>
 
                 <div
@@ -1298,7 +1549,9 @@ export default function AgentsRequirements() {
 
                   <div className="glass" style={{ padding: 12 }}>
                     <div style={{ fontSize: 13, opacity: 0.75 }}>Premium Submitted</div>
-                    <div style={{ fontSize: 22, fontWeight: 800 }}>{currency(row.premium_submitted)}</div>
+                    <div style={{ fontSize: 22, fontWeight: 800 }}>
+                      {currency(row.premium_submitted)}
+                    </div>
                   </div>
 
                   <div className="glass" style={{ padding: 12 }}>
