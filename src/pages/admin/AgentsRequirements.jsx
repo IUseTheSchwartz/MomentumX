@@ -230,7 +230,7 @@ function matchesSearch(agent, query) {
   return text.includes(query.toLowerCase());
 }
 
-function SummaryBox({ title, value, subtext, onClick }) {
+function SummaryBox({ title, value, subtext, onClick, badgeCount = 0 }) {
   return (
     <button
       type="button"
@@ -243,9 +243,34 @@ function SummaryBox({ title, value, subtext, onClick }) {
         cursor: 'pointer',
         display: 'flex',
         flexDirection: 'column',
-        gap: 6
+        gap: 6,
+        position: 'relative'
       }}
     >
+      {badgeCount > 0 ? (
+        <div
+          style={{
+            position: 'absolute',
+            top: 10,
+            right: 10,
+            minWidth: 24,
+            height: 24,
+            padding: '0 8px',
+            borderRadius: 999,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 12,
+            fontWeight: 800,
+            background: 'rgba(17,217,140,0.18)',
+            border: '1px solid rgba(17,217,140,0.3)',
+            color: '#34d399'
+          }}
+        >
+          {badgeCount > 99 ? '99+' : badgeCount}
+        </div>
+      ) : null}
+
       <div style={{ fontSize: 13, opacity: 0.75 }}>{title}</div>
       <div style={{ fontSize: 26, fontWeight: 800, lineHeight: 1 }}>{value}</div>
       <div style={{ fontSize: 13, opacity: 0.75 }}>{subtext}</div>
@@ -451,6 +476,7 @@ export default function AgentsRequirements() {
   const [activeRecordingForNotes, setActiveRecordingForNotes] = useState(null);
   const [recordingNoteDraft, setRecordingNoteDraft] = useState('');
   const [sendingRecordingNote, setSendingRecordingNote] = useState(false);
+  const [notificationsOnly, setNotificationsOnly] = useState(false);
 
   useEffect(() => {
     load();
@@ -527,9 +553,29 @@ export default function AgentsRequirements() {
     setLoading(false);
   }
 
+  function getUnreadCount(recordingId) {
+    const notes = notesByRecording[recordingId] || [];
+    const readAt = readsByRecording[recordingId]?.last_read_at
+      ? new Date(readsByRecording[recordingId].last_read_at).getTime()
+      : 0;
+
+    return notes.filter((note) => {
+      const createdAt = new Date(note.created_at).getTime();
+      return createdAt > readAt && note.sender_id !== currentUserId;
+    }).length;
+  }
+
+  function getAgentRecordingUnreadCount(agent) {
+    return (agent.recordings || []).reduce((sum, recording) => sum + getUnreadCount(recording.id), 0);
+  }
+
   const filteredAgents = useMemo(() => {
-    return agents.filter((agent) => matchesSearch(agent, search));
-  }, [agents, search]);
+    return agents.filter((agent) => {
+      if (!matchesSearch(agent, search)) return false;
+      if (notificationsOnly && getAgentRecordingUnreadCount(agent) <= 0) return false;
+      return true;
+    });
+  }, [agents, search, notificationsOnly, readsByRecording, notesByRecording, currentUserId]);
 
   const selectedAgent = useMemo(() => {
     if (!activeModal?.agentId) return null;
@@ -566,18 +612,6 @@ export default function AgentsRequirements() {
     setActiveModal(null);
     setActiveRecordingForNotes(null);
     setRecordingNoteDraft('');
-  }
-
-  function getUnreadCount(recordingId) {
-    const notes = notesByRecording[recordingId] || [];
-    const readAt = readsByRecording[recordingId]?.last_read_at
-      ? new Date(readsByRecording[recordingId].last_read_at).getTime()
-      : 0;
-
-    return notes.filter((note) => {
-      const createdAt = new Date(note.created_at).getTime();
-      return createdAt > readAt && note.sender_id !== currentUserId;
-    }).length;
   }
 
   async function markRecordingRead(recordingId) {
@@ -662,14 +696,44 @@ export default function AgentsRequirements() {
       </div>
 
       <div className="glass" style={{ padding: 12, flexShrink: 0 }}>
-        <label>
-          Search
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Agent name, email, or tier..."
-          />
-        </label>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'minmax(0, 1fr) auto',
+            gap: 10,
+            alignItems: 'end'
+          }}
+        >
+          <label>
+            Search
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Agent name, email, or tier..."
+            />
+          </label>
+
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '12px 14px',
+              borderRadius: 14,
+              border: '1px solid rgba(255,255,255,0.08)',
+              background: 'rgba(255,255,255,0.02)',
+              minHeight: 48
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={notificationsOnly}
+              onChange={(e) => setNotificationsOnly(e.target.checked)}
+              style={{ width: 18, height: 18, margin: 0 }}
+            />
+            <span style={{ fontSize: 14 }}>Notifications only</span>
+          </label>
+        </div>
       </div>
 
       <div
@@ -698,6 +762,7 @@ export default function AgentsRequirements() {
         {filteredAgents.map((agent) => {
           const expanded = expandedAgentId === agent.id;
           const checklist = buildChecklist(agent);
+          const recordingUnreadCount = getAgentRecordingUnreadCount(agent);
 
           return (
             <div
@@ -718,8 +783,28 @@ export default function AgentsRequirements() {
                 }}
               >
                 <div>
-                  <div style={{ fontSize: 20, fontWeight: 800 }}>
+                  <div style={{ fontSize: 20, fontWeight: 800, display: 'flex', alignItems: 'center', gap: 10 }}>
                     {agent.display_name || 'Unnamed Agent'}
+                    {recordingUnreadCount > 0 ? (
+                      <span
+                        style={{
+                          minWidth: 24,
+                          height: 24,
+                          padding: '0 8px',
+                          borderRadius: 999,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: 12,
+                          fontWeight: 800,
+                          background: 'rgba(17,217,140,0.18)',
+                          border: '1px solid rgba(17,217,140,0.3)',
+                          color: '#34d399'
+                        }}
+                      >
+                        {recordingUnreadCount > 99 ? '99+' : recordingUnreadCount}
+                      </span>
+                    ) : null}
                   </div>
                   <div style={{ opacity: 0.75, fontSize: 14 }}>
                     {agent.email || 'No email'} · {agent.tierName}
@@ -806,6 +891,7 @@ export default function AgentsRequirements() {
                       value={agent.recordings.length}
                       subtext="Open recordings by day, week, or month"
                       onClick={() => openModal(agent.id, 'recordings')}
+                      badgeCount={recordingUnreadCount}
                     />
 
                     <SummaryBox
