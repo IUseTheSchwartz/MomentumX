@@ -155,11 +155,7 @@ export default function Overview() {
       row.sits += Number(entry.sits || 0);
       row.sales += Number(entry.sales || 0);
 
-      row.kpiOutput =
-        row.dials +
-        row.contacts +
-        row.sits +
-        row.sales;
+      row.kpiOutput = row.dials + row.contacts + row.sits + row.sales;
     }
 
     const rows = Array.from(byAgent.values()).map((row) => ({
@@ -184,76 +180,97 @@ export default function Overview() {
   }, [profiles, leads, kpiRows]);
 
   return (
-    <div className="page">
-      <div className="page-header">
+    <div
+      className="page"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        minHeight: 0,
+        overflow: 'hidden'
+      }}
+    >
+      <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
           <h1>Admin Overview</h1>
           <p>Team-wide performance, lead inventory, and admin controls at a glance.</p>
         </div>
       </div>
 
-      <div className="grid grid-4">
-        <StatCard
-          label="Agents"
-          value={loading ? '—' : stats.totalAgents}
-          subtext={loading ? '' : `${stats.activeAgents} eligible for leads`}
-        />
-        <StatCard
-          label="Unassigned Leads"
-          value={loading ? '—' : stats.unassignedLeads}
-          subtext="Available inventory"
-        />
-        <StatCard
-          label="Team AP"
-          value={loading ? '—' : formatMoney(stats.totalAp)}
-          subtext={`${stats.soldLeads} sold leads`}
-        />
-        <StatCard
-          label="Team Conversion"
-          value={loading ? '—' : formatPercent(stats.conversionRate)}
-          subtext="Sold / assigned leads"
-        />
-      </div>
-
-      <div className="grid grid-4 top-gap">
-        <StatCard
-          label="Active Tiers"
-          value={loading ? '—' : stats.activeTiers}
-        />
-        <StatCard
-          label="Distribution Rules"
-          value={loading ? '—' : stats.activeRules}
-          subtext="Tier-based rules"
-        />
-      </div>
-
-      <div className="top-gap">
-        <h2 style={{ marginBottom: 12 }}>Leaderboards</h2>
-
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-            gap: 12
-          }}
-        >
-          <LeaderboardCard
-            title="Highest AP Sold"
-            rows={leaderboards.ap}
-            renderValue={(row) => formatMoney(row.apSold)}
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflow: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 18,
+          paddingRight: 4
+        }}
+      >
+        <div className="grid grid-4">
+          <StatCard
+            label="Agents"
+            value={loading ? '—' : stats.totalAgents}
+            subtext={loading ? '' : `${stats.activeAgents} eligible for leads`}
           />
-
-          <LeaderboardCard
-            title="Best Conversion Rate"
-            rows={leaderboards.conversion}
-            renderValue={(row) => formatPercent(row.conversionRate)}
+          <StatCard
+            label="Unassigned Leads"
+            value={loading ? '—' : stats.unassignedLeads}
+            subtext="Available inventory"
           />
-
-          <LeaderboardCard
-            title="Highest KPI Output"
-            rows={leaderboards.kpi}
-            renderValue={(row) => row.kpiOutput.toLocaleString()}
+          <StatCard
+            label="Team AP"
+            value={loading ? '—' : formatMoney(stats.totalAp)}
+            subtext={`${stats.soldLeads} sold leads`}
           />
+          <StatCard
+            label="Team Conversion"
+            value={loading ? '—' : formatPercent(stats.conversionRate)}
+            subtext="Sold / assigned leads"
+          />
+        </div>
+
+        <div className="grid grid-4">
+          <StatCard
+            label="Active Tiers"
+            value={loading ? '—' : stats.activeTiers}
+          />
+          <StatCard
+            label="Distribution Rules"
+            value={loading ? '—' : stats.activeRules}
+            subtext="Tier-based rules"
+          />
+        </div>
+
+        <div>
+          <h2 style={{ margin: '0 0 12px' }}>Leaderboards</h2>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+              gap: 12
+            }}
+          >
+            <LeaderboardCard
+              title="Highest AP Sold"
+              rows={leaderboards.ap}
+              renderValue={(row) => formatMoney(row.apSold)}
+            />
+
+            <LeaderboardCard
+              title="Best Conversion Rate"
+              rows={leaderboards.conversion}
+              renderValue={(row) => formatPercent(row.conversionRate)}
+            />
+
+            <LeaderboardCard
+              title="Highest KPI Output"
+              rows={leaderboards.kpi}
+              renderValue={(row) => row.kpiOutput.toLocaleString()}
+            />
+          </div>
         </div>
       </div>
     </div>
