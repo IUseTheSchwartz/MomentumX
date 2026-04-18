@@ -232,6 +232,11 @@ export default function ReplacementRequests() {
     });
   }, [requests, leadsById, profilesById, search, statusFilter, leadTypeFilter, categoryFilter]);
 
+  const pendingCount = useMemo(
+    () => requests.filter((request) => request.status === 'pending').length,
+    [requests]
+  );
+
   return (
     <div
       className="page"
@@ -247,6 +252,19 @@ export default function ReplacementRequests() {
         <div>
           <h1>Replacement Requests</h1>
           <p>Review lead replacement requests, approve or deny them, and assign a matching replacement lead.</p>
+        </div>
+
+        <div
+          className="glass"
+          style={{
+            padding: '10px 14px',
+            borderRadius: 14,
+            alignSelf: 'flex-start',
+            fontSize: 14,
+            fontWeight: 700
+          }}
+        >
+          Pending: {pendingCount}
         </div>
       </div>
 
