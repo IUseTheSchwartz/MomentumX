@@ -19,6 +19,7 @@ const adminLinks = [
   ['/admin/agents-requirements', 'Agents Requirements'],
   ['/admin/leads', 'Leads'],
   ['/admin/replacement-requests', 'Replacement Requests'],
+  ['/admin/support', 'Support'],
   ['/admin/tiers', 'Tiers'],
   ['/admin/distribution', 'Distribution'],
   ['/admin/logs', 'Logs']
