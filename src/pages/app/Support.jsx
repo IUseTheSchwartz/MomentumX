@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { formatDate } from '../../lib/utils';
 
-function getUnreadCountForTicket(ticketId, messagesByTicket, readsByTicket, currentUserId) {
+function getUnreadCountForTicket(ticketId, messagesByTicket, readsByTicket) {
   const messages = messagesByTicket[ticketId] || [];
   const readAt = readsByTicket[ticketId]?.last_read_at
     ? new Date(readsByTicket[ticketId].last_read_at).getTime()
@@ -11,7 +11,7 @@ function getUnreadCountForTicket(ticketId, messagesByTicket, readsByTicket, curr
 
   return messages.filter((message) => {
     const createdAt = new Date(message.created_at).getTime();
-    return createdAt > readAt && message.sender_id !== currentUserId;
+    return createdAt > readAt && message.sender_is_admin;
   }).length;
 }
 
@@ -78,22 +78,16 @@ export default function Support() {
 
   useEffect(() => {
     async function syncReadForSelectedTicket() {
-      if (!selectedTicketId || !profile?.id) return;
+      if (!selectedTicketId) return;
 
-      const unreadCount = getUnreadCountForTicket(
-        selectedTicketId,
-        messagesByTicket,
-        readsByTicket,
-        profile.id
-      );
-
+      const unreadCount = getUnreadCountForTicket(selectedTicketId, messagesByTicket, readsByTicket);
       if (unreadCount > 0) {
         await markSelectedTicketRead(selectedTicketId);
       }
     }
 
     syncReadForSelectedTicket();
-  }, [selectedTicketId, messagesByTicket, readsByTicket, profile?.id]);
+  }, [selectedTicketId, messagesByTicket, readsByTicket]);
 
   async function load({ silent = false } = {}) {
     if (!silent) {
@@ -124,23 +118,18 @@ export default function Support() {
 
     if (ticketsError) {
       console.error('Failed to load support tickets:', ticketsError);
-      if (!silent) {
-        setStatusMessage(ticketsError.message || 'Failed to load support tickets.');
-      }
+      if (!silent) setStatusMessage(ticketsError.message || 'Failed to load support tickets.');
       return;
     }
 
     const safeTickets = ticketRows || [];
-
     setProfile(profileRow || null);
     setTickets(safeTickets);
 
     if (!safeTickets.length) {
       setMessagesByTicket({});
       setReadsByTicket({});
-      if (selectedTicketId) {
-        setSelectedTicketId(null);
-      }
+      if (selectedTicketId) setSelectedTicketId(null);
       return;
     }
 
@@ -167,16 +156,12 @@ export default function Support() {
 
     if (messagesError) {
       console.error('Failed to load support messages:', messagesError);
-      if (!silent) {
-        setStatusMessage(messagesError.message || 'Failed to load support messages.');
-      }
+      if (!silent) setStatusMessage(messagesError.message || 'Failed to load support messages.');
     }
 
     if (readsError) {
-      console.error('Failed to load support message reads:', readsError);
-      if (!silent) {
-        setStatusMessage(readsError.message || 'Failed to load support reads.');
-      }
+      console.error('Failed to load support reads:', readsError);
+      if (!silent) setStatusMessage(readsError.message || 'Failed to load support reads.');
     }
 
     const nextMessagesByTicket = {};
@@ -278,6 +263,7 @@ export default function Support() {
       const { error: messageError } = await supabase.from('support_messages').insert({
         ticket_id: insertedTicket.id,
         sender_id: session.user.id,
+        sender_is_admin: false,
         body: trimmedOpeningMessage
       });
 
@@ -324,6 +310,7 @@ export default function Support() {
       const { error } = await supabase.from('support_messages').insert({
         ticket_id: selectedTicketId,
         sender_id: session.user.id,
+        sender_is_admin: false,
         body: trimmedReply
       });
 
@@ -351,7 +338,7 @@ export default function Support() {
   );
 
   function getUnreadCount(ticketId) {
-    return getUnreadCountForTicket(ticketId, messagesByTicket, readsByTicket, profile?.id);
+    return getUnreadCountForTicket(ticketId, messagesByTicket, readsByTicket);
   }
 
   return (
@@ -453,9 +440,7 @@ export default function Support() {
                           : unreadCount > 0
                             ? '1px solid rgba(17,217,140,0.25)'
                             : '1px solid rgba(255,255,255,0.08)',
-                        background: isActive
-                          ? 'rgba(17,217,140,0.08)'
-                          : undefined,
+                        background: isActive ? 'rgba(17,217,140,0.08)' : undefined,
                         cursor: 'pointer'
                       }}
                     >
@@ -543,11 +528,10 @@ export default function Support() {
                   <div style={{ opacity: 0.75 }}>No messages yet.</div>
                 ) : (
                   selectedMessages.map((message) => {
-                    const isMine = message.sender_id === profile?.id;
-                    const senderName =
-                      message.profiles?.display_name ||
-                      message.profiles?.email ||
-                      (isMine ? 'You' : 'Admin');
+                    const isMine = !message.sender_is_admin;
+                    const senderName = message.sender_is_admin
+                      ? 'Admin'
+                      : message.profiles?.display_name || message.profiles?.email || 'You';
 
                     return (
                       <div
