@@ -1,4 +1,3 @@
-// src/components/AppShell.jsx
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import { useEffect, useRef, useState } from 'react';
@@ -216,32 +215,49 @@ export default function AppShell({ admin = false }) {
 
         let support = 0;
 
-        const { data: visibleTickets, error: ticketsError } = await supabase
+        const { data: ticketRows, error: ticketsError } = await supabase
           .from('support_tickets')
           .select('id');
 
         if (!ticketsError) {
-          const ticketIds = (visibleTickets || []).map((row) => row.id).filter(Boolean);
+          const ticketIds = (ticketRows || []).map((row) => row.id).filter(Boolean);
 
           if (ticketIds.length) {
             const [{ data: messageRows, error: messagesError }, { data: readRows, error: readsError }] =
               await Promise.all([
                 supabase
                   .from('support_messages')
-                  .select('id, ticket_id, sender_id, created_at')
-                  .in('ticket_id', ticketIds),
+                  .select('ticket_id, sender_id, created_at')
+                  .in('ticket_id', ticketIds)
+                  .order('created_at', { ascending: false }),
                 supabase
                   .from('support_message_reads')
-                  .select('message_id')
+                  .select('ticket_id, last_read_at')
                   .eq('user_id', userId)
+                  .in('ticket_id', ticketIds)
               ]);
 
             if (!messagesError && !readsError) {
-              const readMessageIds = new Set((readRows || []).map((row) => row.message_id));
+              const readsByTicketId = {};
+              for (const row of readRows || []) {
+                readsByTicketId[row.ticket_id] = row;
+              }
 
-              support = (messageRows || []).filter(
-                (row) => row.sender_id !== userId && !readMessageIds.has(row.id)
-              ).length;
+              const latestIncomingByTicketId = {};
+              for (const row of messageRows || []) {
+                if (row.sender_id === userId) continue;
+                if (!latestIncomingByTicketId[row.ticket_id]) {
+                  latestIncomingByTicketId[row.ticket_id] = row;
+                }
+              }
+
+              support = Object.values(latestIncomingByTicketId).reduce((sum, row) => {
+                const readAt = readsByTicketId[row.ticket_id]?.last_read_at
+                  ? new Date(readsByTicketId[row.ticket_id].last_read_at).getTime()
+                  : 0;
+                const messageAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+                return sum + (messageAt > readAt ? 1 : 0);
+              }, 0);
             }
           }
         }
@@ -257,8 +273,8 @@ export default function AppShell({ admin = false }) {
 
         if (!cancelled) {
           setNavCounts({
-            replacementRequests: admin ? navCounts.replacementRequests : 0,
-            support: navCounts.support
+            replacementRequests: 0,
+            support: 0
           });
         }
       }
