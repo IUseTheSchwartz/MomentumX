@@ -36,5 +36,5 @@
 [functions]
   directory = "netlify/functions"
 
-[functions."tier-expire"]
-  schedule = "@daily"
+[functions."distribution-run"]
+  schedule = "0 12 * * 1"
