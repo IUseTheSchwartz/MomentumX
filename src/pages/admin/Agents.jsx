@@ -4,6 +4,7 @@ import DataTable from '../../components/DataTable';
 import { writeAdminLog } from '../../lib/adminLog';
 
 const leadTypes = ['Veteran', 'Trucker IUL', 'Mortgage', 'General IUL'];
+const PROGRAM_DAYS = 90;
 
 function formatDate(value) {
   if (!value) return '—';
@@ -12,26 +13,56 @@ function formatDate(value) {
   return date.toLocaleDateString();
 }
 
+function getProgramStart(row) {
+  return row.lead_program_started_at || null;
+}
+
+function getDaysLeft(row) {
+  if (!row.lead_program_active) return 0;
+
+  const startValue = getProgramStart(row);
+  if (!startValue) return PROGRAM_DAYS;
+
+  const start = new Date(startValue);
+  if (Number.isNaN(start.getTime())) return 0;
+
+  const now = new Date();
+  const elapsedMs = now.getTime() - start.getTime();
+  const elapsedDays = Math.floor(elapsedMs / (1000 * 60 * 60 * 24));
+  return Math.max(0, PROGRAM_DAYS - elapsedDays);
+}
+
+function getProgramStatus(row) {
+  if (row.lead_access_banned) return 'Ineligible';
+  if (row.leads_paused) return 'Paused';
+  if (!row.lead_program_active) return 'Not Active';
+
+  const daysLeft = getDaysLeft(row);
+  if (daysLeft <= 0) return 'Expired';
+
+  return 'Active';
+}
+
 export default function Agents() {
   const [rows, setRows] = useState([]);
-  const [tiers, setTiers] = useState([]);
   const [message, setMessage] = useState('');
   const [search, setSearch] = useState('');
-  const [tierFilter, setTierFilter] = useState('all');
-  const [eligibilityFilter, setEligibilityFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
   const [pageSize, setPageSize] = useState('50');
 
   async function load() {
-    const [{ data: profiles }, { data: tierRows }] = await Promise.all([
-      supabase
-        .from('profiles')
-        .select('*, tiers(name, duration_days)')
-        .order('created_at', { ascending: false }),
-      supabase.from('tiers').select('id, name, duration_days').order('sort_order')
-    ]);
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .order('created_at', { ascending: false });
 
-    setRows(profiles || []);
-    setTiers(tierRows || []);
+    if (error) {
+      setMessage(error.message || 'Could not load agents.');
+      setRows([]);
+      return;
+    }
+
+    setRows(data || []);
   }
 
   useEffect(() => {
@@ -72,18 +103,32 @@ export default function Agents() {
     updateProfile(row.id, { allowed_lead_types: next }, 'Updated allowed lead types');
   }
 
-  function handleTierChange(row, nextTierId) {
-    const patch = nextTierId
-      ? {
-          tier_id: nextTierId,
-          tier_assigned_at: new Date().toISOString()
-        }
-      : {
-          tier_id: null,
-          tier_assigned_at: null
-        };
+  function toggleProgramActive(row) {
+    const nextActive = !row.lead_program_active;
 
-    updateProfile(row.id, patch, 'Changed agent tier');
+    const patch = {
+      lead_program_active: nextActive,
+      lead_program_started_at: nextActive
+        ? row.lead_program_started_at || new Date().toISOString()
+        : null
+    };
+
+    updateProfile(
+      row.id,
+      patch,
+      nextActive ? 'Activated 90-day lead program' : 'Deactivated 90-day lead program'
+    );
+  }
+
+  function restartProgram(row) {
+    updateProfile(
+      row.id,
+      {
+        lead_program_active: true,
+        lead_program_started_at: new Date().toISOString()
+      },
+      'Restarted 90-day lead program'
+    );
   }
 
   const filteredRows = useMemo(() => {
@@ -92,7 +137,8 @@ export default function Agents() {
         row.display_name,
         row.email,
         row.discord_username,
-        row.tiers?.name
+        getProgramStatus(row),
+        Array.isArray(row.allowed_lead_types) ? row.allowed_lead_types.join(' ') : ''
       ]
         .filter(Boolean)
         .join(' ')
@@ -101,24 +147,22 @@ export default function Agents() {
       return text.includes(search.toLowerCase());
     });
 
-    if (tierFilter !== 'all') {
-      if (tierFilter === 'none') {
-        next = next.filter((row) => !row.tier_id);
-      } else {
-        next = next.filter((row) => row.tier_id === tierFilter);
-      }
-    }
+    if (statusFilter !== 'all') {
+      next = next.filter((row) => {
+        const status = getProgramStatus(row).toLowerCase();
 
-    if (eligibilityFilter === 'eligible') {
-      next = next.filter((row) => !row.leads_paused && !row.lead_access_banned);
-    } else if (eligibilityFilter === 'paused') {
-      next = next.filter((row) => row.leads_paused);
-    } else if (eligibilityFilter === 'banned') {
-      next = next.filter((row) => row.lead_access_banned);
+        if (statusFilter === 'active') return status === 'active';
+        if (statusFilter === 'not_active') return status === 'not active';
+        if (statusFilter === 'expired') return status === 'expired';
+        if (statusFilter === 'paused') return status === 'paused';
+        if (statusFilter === 'ineligible') return status === 'ineligible';
+
+        return true;
+      });
     }
 
     return next;
-  }, [rows, search, tierFilter, eligibilityFilter]);
+  }, [rows, search, statusFilter]);
 
   const visibleRows = useMemo(() => {
     if (pageSize === 'all') return filteredRows;
@@ -129,14 +173,52 @@ export default function Agents() {
     { key: 'display_name', label: 'Agent' },
     { key: 'email', label: 'Email' },
     {
-      key: 'tiers',
-      label: 'Tier',
-      render: (_value, row) => row.tiers?.name || 'No Tier'
+      key: 'lead_program_active',
+      label: 'Program Status',
+      render: (_value, row) => {
+        const status = getProgramStatus(row);
+        const isActive = status === 'Active';
+
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <button
+              className={isActive ? 'btn btn-primary btn-small' : 'btn btn-ghost btn-small'}
+              onClick={() => toggleProgramActive(row)}
+              type="button"
+            >
+              {row.lead_program_active ? 'Active' : 'Not Active'}
+            </button>
+
+            <div style={{ fontSize: 12, opacity: 0.75 }}>{status}</div>
+          </div>
+        );
+      }
     },
     {
-      key: 'tier_assigned_at',
-      label: 'Tier Assigned',
+      key: 'lead_program_started_at',
+      label: 'Started',
       render: (value) => formatDate(value)
+    },
+    {
+      key: 'days_left',
+      label: 'Days Left',
+      render: (_value, row) => {
+        const daysLeft = getDaysLeft(row);
+        const status = getProgramStatus(row);
+
+        if (!row.lead_program_active) return '—';
+
+        return (
+          <div
+            style={{
+              fontWeight: 800,
+              color: daysLeft > 0 ? '#34d399' : '#f87171'
+            }}
+          >
+            {status === 'Expired' ? 'Expired' : `${daysLeft} days`}
+          </div>
+        );
+      }
     },
     {
       key: 'allowed_lead_types',
@@ -193,20 +275,16 @@ export default function Agents() {
       )
     },
     {
-      key: 'id',
-      label: 'Change Tier',
+      key: 'actions',
+      label: 'Actions',
       render: (_value, row) => (
-        <select
-          value={row.tier_id || ''}
-          onChange={(e) => handleTierChange(row, e.target.value || null)}
+        <button
+          className="btn btn-ghost btn-small"
+          onClick={() => restartProgram(row)}
+          type="button"
         >
-          <option value="">No Tier</option>
-          {tiers.map((tier) => (
-            <option key={tier.id} value={tier.id}>
-              {tier.name}
-            </option>
-          ))}
-        </select>
+          Restart 90 Days
+        </button>
       )
     }
   ];
@@ -225,7 +303,7 @@ export default function Agents() {
       <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
           <h1>Agents</h1>
-          <p>Manage eligibility, lead-type access, and manual tier placement.</p>
+          <p>Manage 90-day lead program access, lead types, pauses, and eligibility.</p>
         </div>
       </div>
 
@@ -233,7 +311,7 @@ export default function Agents() {
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+            gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
             gap: 10
           }}
         >
@@ -242,30 +320,19 @@ export default function Agents() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Agent name or email..."
+              placeholder="Agent name, email, status, or lead type..."
             />
           </label>
 
           <label>
-            Tier
-            <select value={tierFilter} onChange={(e) => setTierFilter(e.target.value)}>
+            Status
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
               <option value="all">All</option>
-              <option value="none">No Tier</option>
-              {tiers.map((tier) => (
-                <option key={tier.id} value={tier.id}>
-                  {tier.name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            Eligibility
-            <select value={eligibilityFilter} onChange={(e) => setEligibilityFilter(e.target.value)}>
-              <option value="all">All</option>
-              <option value="eligible">Eligible</option>
+              <option value="active">Active</option>
+              <option value="not_active">Not Active</option>
+              <option value="expired">Expired</option>
               <option value="paused">Paused</option>
-              <option value="banned">Ineligible</option>
+              <option value="ineligible">Ineligible</option>
             </select>
           </label>
 
