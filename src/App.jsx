@@ -11,7 +11,6 @@ import Ineligible from './pages/Ineligible';
 import Dashboard from './pages/app/Dashboard';
 import Leads from './pages/app/Leads';
 import KPI from './pages/app/KPI';
-import Requirements from './pages/app/Requirements';
 import Recordings from './pages/app/Recordings';
 import Scripts from './pages/app/Scripts';
 import BookOfBusiness from './pages/app/BookOfBusiness';
@@ -19,10 +18,8 @@ import Support from './pages/app/Support';
 
 import Overview from './pages/admin/Overview';
 import Agents from './pages/admin/Agents';
-import AgentsRequirements from './pages/admin/AgentsRequirements';
 import LeadsAdmin from './pages/admin/LeadsAdmin';
 import ReplacementRequests from './pages/admin/ReplacementRequests';
-import Tiers from './pages/admin/Tiers';
 import Distribution from './pages/admin/Distribution';
 import SupportAdmin from './pages/admin/SupportAdmin';
 import Logs from './pages/admin/Logs';
@@ -47,7 +44,6 @@ export default function App() {
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="leads" element={<Leads />} />
         <Route path="kpi" element={<KPI />} />
-        <Route path="requirements" element={<Requirements />} />
         <Route path="recordings" element={<Recordings />} />
         <Route path="scripts" element={<Scripts />} />
         <Route path="book" element={<BookOfBusiness />} />
@@ -65,10 +61,8 @@ export default function App() {
         <Route index element={<Navigate to="/admin/overview" replace />} />
         <Route path="overview" element={<Overview />} />
         <Route path="agents" element={<Agents />} />
-        <Route path="agents-requirements" element={<AgentsRequirements />} />
         <Route path="leads" element={<LeadsAdmin />} />
         <Route path="replacement-requests" element={<ReplacementRequests />} />
-        <Route path="tiers" element={<Tiers />} />
         <Route path="distribution" element={<Distribution />} />
         <Route path="support" element={<SupportAdmin />} />
         <Route path="logs" element={<Logs />} />
