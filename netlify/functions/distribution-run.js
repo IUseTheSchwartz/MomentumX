@@ -5,15 +5,34 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-function getBusinessDayName(date = new Date()) {
-  return date.toLocaleDateString('en-US', {
-    weekday: 'long',
-    timeZone: 'America/Chicago'
-  }).toLowerCase();
+const PROGRAM_DAYS = 90;
+
+function getDaysLeft(profile) {
+  if (!profile?.lead_program_active) return 0;
+  if (!profile?.lead_program_started_at) return PROGRAM_DAYS;
+
+  const start = new Date(profile.lead_program_started_at);
+  if (Number.isNaN(start.getTime())) return 0;
+
+  const elapsedDays = Math.floor((Date.now() - start.getTime()) / (1000 * 60 * 60 * 24));
+  return Math.max(0, PROGRAM_DAYS - elapsedDays);
+}
+
+function isEligibleAgent(profile) {
+  if (!profile?.lead_program_active) return false;
+  if (profile?.leads_paused) return false;
+  if (profile?.lead_access_banned) return false;
+  if (getDaysLeft(profile) <= 0) return false;
+
+  const allowedLeadTypes = Array.isArray(profile.allowed_lead_types)
+    ? profile.allowed_lead_types.filter(Boolean)
+    : [];
+
+  return allowedLeadTypes.length > 0;
 }
 
 async function fetchUnassignedLeadIds({ leadCategory, leadType, limit }) {
-  if (!leadType || limit <= 0) return [];
+  if (!leadCategory || !leadType || limit <= 0) return [];
 
   const { data, error } = await supabase
     .from('leads')
@@ -25,11 +44,12 @@ async function fetchUnassignedLeadIds({ leadCategory, leadType, limit }) {
     .limit(limit);
 
   if (error) throw error;
+
   return (data || []).map((row) => row.id);
 }
 
 async function assignLeadIdsToAgent({ leadIds, agentId }) {
-  if (!leadIds.length) return 0;
+  if (!leadIds.length || !agentId) return 0;
 
   const { data, error } = await supabase
     .from('leads')
@@ -42,14 +62,13 @@ async function assignLeadIdsToAgent({ leadIds, agentId }) {
     .select('id');
 
   if (error) throw error;
+
   return (data || []).length;
 }
 
 async function fetchAvailableCountsByType({ leadCategory, leadTypes }) {
   const safeTypes = Array.isArray(leadTypes) ? leadTypes.filter(Boolean) : [];
   const counts = {};
-
-  if (!safeTypes.length) return counts;
 
   await Promise.all(
     safeTypes.map(async (leadType) => {
@@ -79,17 +98,15 @@ function buildPreferredTypeOrder({ leadTypes, availableCounts }) {
   });
 }
 
-async function assignForAgent({
-  agent,
-  leadCategory,
-  totalAmount,
-  assignedSummary
-}) {
+async function assignCategoryForAgent({ agent, leadCategory, amount, summary }) {
+  const targetAmount = Number(amount || 0);
+  if (targetAmount <= 0) return 0;
+
   const allowedLeadTypes = Array.isArray(agent.allowed_lead_types)
     ? agent.allowed_lead_types.filter(Boolean)
     : [];
 
-  if (!allowedLeadTypes.length || totalAmount <= 0) return 0;
+  if (!allowedLeadTypes.length) return 0;
 
   const availableCounts = await fetchAvailableCountsByType({
     leadCategory,
@@ -101,7 +118,7 @@ async function assignForAgent({
     availableCounts
   });
 
-  let remainingNeeded = Number(totalAmount || 0);
+  let remainingNeeded = targetAmount;
   let assignedForAgent = 0;
   const assignedByType = {};
 
@@ -127,158 +144,133 @@ async function assignForAgent({
     if (assignedCount > 0) {
       assignedForAgent += assignedCount;
       remainingNeeded -= assignedCount;
-      assignedByType[leadType] = (assignedByType[leadType] || 0) + assignedCount;
-      availableCounts[leadType] = Math.max(
-        0,
-        Number(availableCounts[leadType] || 0) - assignedCount
-      );
+      assignedByType[leadType] = Number(assignedByType[leadType] || 0) + assignedCount;
+      availableCounts[leadType] = Math.max(0, available - assignedCount);
     }
   }
 
-  if (!assignedSummary.byAgent[agent.id]) {
-    assignedSummary.byAgent[agent.id] = {
+  if (!summary.byAgent[agent.id]) {
+    summary.byAgent[agent.id] = {
       agentId: agent.id,
+      agentName: agent.display_name || agent.email || 'Unnamed Agent',
+      daysLeft: getDaysLeft(agent),
       assignedAged: 0,
       assignedFresh: 0,
+      assignedTotal: 0,
       assignedAgedByType: {},
       assignedFreshByType: {}
     };
   }
 
+  const agentSummary = summary.byAgent[agent.id];
+
   if (leadCategory === 'aged') {
-    assignedSummary.assignedAged += assignedForAgent;
-    assignedSummary.byAgent[agent.id].assignedAged += assignedForAgent;
+    summary.assignedAged += assignedForAgent;
+    agentSummary.assignedAged += assignedForAgent;
 
     for (const [leadType, count] of Object.entries(assignedByType)) {
-      assignedSummary.byAgent[agent.id].assignedAgedByType[leadType] =
-        Number(assignedSummary.byAgent[agent.id].assignedAgedByType[leadType] || 0) +
-        count;
-    }
-  } else if (leadCategory === 'fresh') {
-    assignedSummary.assignedFresh += assignedForAgent;
-    assignedSummary.byAgent[agent.id].assignedFresh += assignedForAgent;
-
-    for (const [leadType, count] of Object.entries(assignedByType)) {
-      assignedSummary.byAgent[agent.id].assignedFreshByType[leadType] =
-        Number(assignedSummary.byAgent[agent.id].assignedFreshByType[leadType] || 0) +
-        count;
+      agentSummary.assignedAgedByType[leadType] =
+        Number(agentSummary.assignedAgedByType[leadType] || 0) + count;
     }
   }
+
+  if (leadCategory === 'fresh') {
+    summary.assignedFresh += assignedForAgent;
+    agentSummary.assignedFresh += assignedForAgent;
+
+    for (const [leadType, count] of Object.entries(assignedByType)) {
+      agentSummary.assignedFreshByType[leadType] =
+        Number(agentSummary.assignedFreshByType[leadType] || 0) + count;
+    }
+  }
+
+  summary.assignedTotal += assignedForAgent;
+  agentSummary.assignedTotal += assignedForAgent;
 
   return assignedForAgent;
 }
 
-async function assignLeadsForBucket({
-  tierId,
-  leadCategory,
-  amount,
-  profiles,
-  assignedSummary
-}) {
-  const targetAmount = Number(amount || 0);
-  if (targetAmount <= 0) return 0;
-
-  const eligibleAgents = profiles.filter((profile) => {
-    if (profile.leads_paused) return false;
-    if (profile.lead_access_banned) return false;
-    if (profile.tier_id !== tierId) return false;
-    return true;
-  });
-
-  if (!eligibleAgents.length) return 0;
-
-  let totalAssigned = 0;
-
-  for (const agent of eligibleAgents) {
-    const assignedCount = await assignForAgent({
-      agent,
-      leadCategory,
-      totalAmount: targetAmount,
-      assignedSummary
-    });
-
-    totalAssigned += assignedCount;
-  }
-
-  return totalAssigned;
-}
-
 exports.handler = async function (event) {
   try {
-    const method = event.httpMethod || 'GET';
-
-    let body = {};
-    if (method === 'POST' && event.body) {
-      body = JSON.parse(event.body);
+    if (event.httpMethod !== 'POST') {
+      return {
+        statusCode: 405,
+        body: JSON.stringify({
+          ok: false,
+          error: 'Method not allowed.'
+        })
+      };
     }
 
-    const force = Boolean(body.force);
-    const ruleId = body.ruleId || null;
-    const today = getBusinessDayName();
+    const body = event.body ? JSON.parse(event.body) : {};
+    const setupId = body.setupId || null;
 
-    let rulesQuery = supabase
-      .from('distribution_rules')
-      .select('id, tier_id, aged_amount, aged_day_of_week, fresh_amount, fresh_day_of_week, active');
-
-    if (ruleId) {
-      rulesQuery = rulesQuery.eq('id', ruleId);
-    } else {
-      rulesQuery = rulesQuery.eq('active', true);
+    if (!setupId) {
+      return {
+        statusCode: 400,
+        body: JSON.stringify({
+          ok: false,
+          error: 'Missing setupId.'
+        })
+      };
     }
 
-    const { data: rules, error: rulesError } = await rulesQuery;
-    if (rulesError) throw rulesError;
+    const { data: setup, error: setupError } = await supabase
+      .from('lead_distribution_setups')
+      .select('*')
+      .eq('id', setupId)
+      .eq('active', true)
+      .maybeSingle();
+
+    if (setupError) throw setupError;
+
+    if (!setup) {
+      return {
+        statusCode: 404,
+        body: JSON.stringify({
+          ok: false,
+          error: 'Distribution setup not found or inactive.'
+        })
+      };
+    }
 
     const { data: profiles, error: profilesError } = await supabase
       .from('profiles')
-      .select('id, tier_id, leads_paused, lead_access_banned, allowed_lead_types');
+      .select(
+        'id, display_name, email, lead_program_active, lead_program_started_at, leads_paused, lead_access_banned, allowed_lead_types'
+      );
 
     if (profilesError) throw profilesError;
 
+    const eligibleAgents = (profiles || []).filter(isEligibleAgent);
+
     const summary = {
-      processedRules: 0,
+      setupId: setup.id,
+      setupName: setup.name,
+      agedPerAgent: Number(setup.aged_amount || 0),
+      freshPerAgent: Number(setup.fresh_amount || 0),
+      totalPerAgent: Number(setup.aged_amount || 0) + Number(setup.fresh_amount || 0),
+      eligibleAgents: eligibleAgents.length,
       assignedAged: 0,
       assignedFresh: 0,
-      businessDay: today,
+      assignedTotal: 0,
       byAgent: {}
     };
 
-    for (const rule of rules || []) {
-      summary.processedRules += 1;
+    for (const agent of eligibleAgents) {
+      await assignCategoryForAgent({
+        agent,
+        leadCategory: 'aged',
+        amount: Number(setup.aged_amount || 0),
+        summary
+      });
 
-      const shouldRunAged =
-        force || (
-          Number(rule.aged_amount || 0) > 0 &&
-          rule.aged_day_of_week &&
-          rule.aged_day_of_week.toLowerCase() === today
-        );
-
-      const shouldRunFresh =
-        force || (
-          Number(rule.fresh_amount || 0) > 0 &&
-          rule.fresh_day_of_week &&
-          rule.fresh_day_of_week.toLowerCase() === today
-        );
-
-      if (shouldRunAged) {
-        await assignLeadsForBucket({
-          tierId: rule.tier_id,
-          leadCategory: 'aged',
-          amount: Number(rule.aged_amount || 0),
-          profiles,
-          assignedSummary: summary
-        });
-      }
-
-      if (shouldRunFresh) {
-        await assignLeadsForBucket({
-          tierId: rule.tier_id,
-          leadCategory: 'fresh',
-          amount: Number(rule.fresh_amount || 0),
-          profiles,
-          assignedSummary: summary
-        });
-      }
+      await assignCategoryForAgent({
+        agent,
+        leadCategory: 'fresh',
+        amount: Number(setup.fresh_amount || 0),
+        summary
+      });
     }
 
     return {
