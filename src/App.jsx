@@ -15,6 +15,7 @@ import Recordings from './pages/app/Recordings';
 import Scripts from './pages/app/Scripts';
 import BookOfBusiness from './pages/app/BookOfBusiness';
 import Support from './pages/app/Support';
+import NewAgentCourse from './pages/app/NewAgentCourse';
 
 import Overview from './pages/admin/Overview';
 import Agents from './pages/admin/Agents';
@@ -23,6 +24,7 @@ import ReplacementRequests from './pages/admin/ReplacementRequests';
 import Distribution from './pages/admin/Distribution';
 import SupportAdmin from './pages/admin/SupportAdmin';
 import Logs from './pages/admin/Logs';
+import CourseProgress from './pages/admin/CourseProgress';
 
 export default function App() {
   return (
@@ -41,6 +43,7 @@ export default function App() {
         }
       >
         <Route index element={<Navigate to="/app/dashboard" replace />} />
+        <Route path="course" element={<NewAgentCourse />} />
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="leads" element={<Leads />} />
         <Route path="kpi" element={<KPI />} />
@@ -61,6 +64,7 @@ export default function App() {
         <Route index element={<Navigate to="/admin/overview" replace />} />
         <Route path="overview" element={<Overview />} />
         <Route path="agents" element={<Agents />} />
+        <Route path="course" element={<CourseProgress />} />
         <Route path="leads" element={<LeadsAdmin />} />
         <Route path="replacement-requests" element={<ReplacementRequests />} />
         <Route path="distribution" element={<Distribution />} />
