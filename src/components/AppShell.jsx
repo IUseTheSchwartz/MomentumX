@@ -2,7 +2,8 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import { useEffect, useRef, useState } from 'react';
 
-const agentLinks = [
+const fullAgentLinks = [
+  ['/app/course', 'Course'],
   ['/app/dashboard', 'Dashboard'],
   ['/app/leads', 'Leads'],
   ['/app/kpi', 'KPI'],
@@ -12,9 +13,12 @@ const agentLinks = [
   ['/app/support', 'Support']
 ];
 
+const lockedAgentLinks = [['/app/course', 'Course']];
+
 const adminLinks = [
   ['/admin/overview', 'Overview'],
   ['/admin/agents', 'Agents'],
+  ['/admin/course', 'Course Progress'],
   ['/admin/leads', 'Leads'],
   ['/admin/replacement-requests', 'Replacement Requests'],
   ['/admin/distribution', 'Distribution'],
@@ -62,10 +66,10 @@ function NavBadge({ count }) {
 
 export default function AppShell({ admin = false }) {
   const navigate = useNavigate();
-  const links = admin ? adminLinks : agentLinks;
 
   const [session, setSession] = useState(undefined);
   const [profile, setProfile] = useState(null);
+  const [courseStatus, setCourseStatus] = useState(null);
   const [navCounts, setNavCounts] = useState({
     replacementRequests: 0,
     support: 0
@@ -75,6 +79,32 @@ export default function AppShell({ admin = false }) {
   const lastProfileRef = useRef(null);
   const refreshInFlightRef = useRef(false);
   const navRefreshInFlightRef = useRef(false);
+
+  const courseApproved = courseStatus?.status === 'approved';
+  const isLockedAgent = !admin && !profile?.is_admin && !courseApproved;
+  const links = admin ? adminLinks : isLockedAgent ? lockedAgentLinks : fullAgentLinks;
+
+  async function loadCourseStatus(userId) {
+    if (!userId) {
+      setCourseStatus(null);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from('agent_course_status')
+      .select('*')
+      .eq('agent_id', userId)
+      .maybeSingle();
+
+    if (!mountedRef.current) return;
+
+    if (error) {
+      setCourseStatus(null);
+      return;
+    }
+
+    setCourseStatus(data || null);
+  }
 
   async function loadSupportUnreadCount(userId, isAdmin) {
     const { data: ticketRows, error: ticketsError } = await supabase
@@ -168,6 +198,7 @@ export default function AppShell({ admin = false }) {
       if (!nextSession) {
         lastProfileRef.current = null;
         setProfile(null);
+        setCourseStatus(null);
         setNavCounts({
           replacementRequests: 0,
           support: 0
@@ -190,7 +221,12 @@ export default function AppShell({ admin = false }) {
         if (keepPreviousOnFailure && lastProfileRef.current) {
           setProfile(lastProfileRef.current);
         }
-        await loadNavCountsForUser(nextSession.user.id, admin);
+
+        await Promise.all([
+          loadCourseStatus(nextSession.user.id),
+          loadNavCountsForUser(nextSession.user.id, admin)
+        ]);
+
         return;
       }
 
@@ -202,7 +238,12 @@ export default function AppShell({ admin = false }) {
         } else {
           setProfile(null);
         }
-        await loadNavCountsForUser(nextSession.user.id, admin);
+
+        await Promise.all([
+          loadCourseStatus(nextSession.user.id),
+          loadNavCountsForUser(nextSession.user.id, admin)
+        ]);
+
         return;
       }
 
@@ -210,7 +251,10 @@ export default function AppShell({ admin = false }) {
       lastProfileRef.current = safeProfile;
       setProfile(safeProfile);
 
-      await loadNavCountsForUser(nextSession.user.id, admin);
+      await Promise.all([
+        loadCourseStatus(nextSession.user.id),
+        loadNavCountsForUser(nextSession.user.id, admin)
+      ]);
     }
 
     async function refreshFromSession({ keepPreviousOnFailure = true } = {}) {
@@ -242,6 +286,7 @@ export default function AppShell({ admin = false }) {
         lastProfileRef.current = null;
         setSession(null);
         setProfile(null);
+        setCourseStatus(null);
         setNavCounts({
           replacementRequests: 0,
           support: 0
@@ -280,6 +325,7 @@ export default function AppShell({ admin = false }) {
 
     const intervalId = window.setInterval(() => {
       loadNavCountsForUser(session.user.id, admin);
+      loadCourseStatus(session.user.id);
     }, REFRESH_INTERVAL_MS);
 
     const channel = supabase
@@ -303,6 +349,11 @@ export default function AppShell({ admin = false }) {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'support_message_reads' },
         () => loadNavCountsForUser(session.user.id, admin)
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'agent_course_status' },
+        () => loadCourseStatus(session.user.id)
       )
       .subscribe();
 
@@ -409,6 +460,12 @@ export default function AppShell({ admin = false }) {
             flexShrink: 0
           }}
         >
+          {isLockedAgent ? (
+            <div className="glass" style={{ padding: 10, fontSize: 13, opacity: 0.85 }}>
+              Complete the course to unlock Momentum X.
+            </div>
+          ) : null}
+
           {admin ? (
             <button className="btn btn-primary" onClick={switchMode} type="button">
               Switch to Agent
