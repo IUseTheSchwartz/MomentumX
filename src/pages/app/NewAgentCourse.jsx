@@ -72,7 +72,12 @@ function formatTime(seconds) {
 }
 
 function loadYouTubeApi() {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    if (typeof window === 'undefined') {
+      reject(new Error('YouTube player can only load in the browser.'));
+      return;
+    }
+
     if (window.YT?.Player) {
       resolve(window.YT);
       return;
@@ -80,13 +85,17 @@ function loadYouTubeApi() {
 
     const existing = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
 
+    const previousReady = window.onYouTubeIframeAPIReady;
+
     window.onYouTubeIframeAPIReady = () => {
+      if (typeof previousReady === 'function') previousReady();
       resolve(window.YT);
     };
 
     if (!existing) {
       const tag = document.createElement('script');
       tag.src = 'https://www.youtube.com/iframe_api';
+      tag.onerror = () => reject(new Error('Could not load YouTube player.'));
       document.body.appendChild(tag);
     }
   });
@@ -97,12 +106,13 @@ export default function NewAgentCourse() {
   const chunksRef = useRef([]);
 
   const playerRef = useRef(null);
-  const playerContainerRef = useRef(null);
   const progressTimerRef = useRef(null);
   const activeIndexRef = useRef(0);
   const maxWatchedRef = useRef(0);
   const saveTimerRef = useRef(null);
   const completingRef = useRef(false);
+
+  const playerHostId = useMemo(() => `yt-player-${Math.random().toString(36).slice(2)}`, []);
 
   const [sessionUserId, setSessionUserId] = useState('');
   const [status, setStatus] = useState(null);
@@ -183,7 +193,14 @@ export default function NewAgentCourse() {
       if (recordingUrl) URL.revokeObjectURL(recordingUrl);
       if (progressTimerRef.current) clearInterval(progressTimerRef.current);
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      if (playerRef.current?.destroy) playerRef.current.destroy();
+
+      try {
+        if (playerRef.current?.destroy) playerRef.current.destroy();
+      } catch (error) {
+        console.warn('YouTube player cleanup skipped:', error);
+      }
+
+      playerRef.current = null;
     };
   }, []);
 
@@ -321,81 +338,97 @@ export default function NewAgentCourse() {
 
       if (progressTimerRef.current) clearInterval(progressTimerRef.current);
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      if (playerRef.current?.destroy) playerRef.current.destroy();
+
+      try {
+        if (playerRef.current?.destroy) playerRef.current.destroy();
+      } catch (error) {
+        console.warn('YouTube player cleanup skipped:', error);
+      }
+
       playerRef.current = null;
 
-      const YT = await loadYouTubeApi();
+      const playerMount = document.getElementById(playerHostId);
+      if (playerMount) {
+        playerMount.innerHTML = `<div id="${playerHostId}-inner"></div>`;
+      }
 
-      if (cancelled || !playerContainerRef.current) return;
+      try {
+        const YT = await loadYouTubeApi();
 
-      playerRef.current = new YT.Player(playerContainerRef.current, {
-        videoId: youtubeId,
-        playerVars: {
-          rel: 0,
-          modestbranding: 1,
-          controls: 0,
-          disablekb: 1,
-          fs: 0,
-          playsinline: 1
-        },
-        events: {
-          onReady: (event) => {
-            if (cancelled) return;
+        if (cancelled) return;
 
-            const player = event.target;
-            const videoDuration = Number(player.getDuration() || 0);
-
-            setDuration(videoDuration);
-            setVideoReady(true);
-
-            if (savedSeconds > 0 && savedSeconds < videoDuration) {
-              player.seekTo(savedSeconds, true);
-              setCurrentTime(savedSeconds);
-            }
+        playerRef.current = new YT.Player(`${playerHostId}-inner`, {
+          videoId: youtubeId,
+          playerVars: {
+            rel: 0,
+            modestbranding: 1,
+            controls: 0,
+            disablekb: 1,
+            fs: 0,
+            playsinline: 1
           },
-          onStateChange: (event) => {
-            if (!window.YT) return;
+          events: {
+            onReady: (event) => {
+              if (cancelled) return;
 
-            if (event.data === window.YT.PlayerState.PLAYING) {
-              setPlaying(true);
-            }
+              const player = event.target;
+              const videoDuration = Number(player.getDuration() || 0);
 
-            if (
-              event.data === window.YT.PlayerState.PAUSED ||
-              event.data === window.YT.PlayerState.ENDED
-            ) {
-              setPlaying(false);
-            }
+              setDuration(videoDuration);
+              setVideoReady(true);
 
-            if (event.data === window.YT.PlayerState.ENDED) {
-              completeVideo(activeIndexRef.current);
+              if (savedSeconds > 0 && savedSeconds < videoDuration) {
+                player.seekTo(savedSeconds, true);
+                setCurrentTime(savedSeconds);
+              }
+            },
+            onStateChange: (event) => {
+              if (!window.YT) return;
+
+              if (event.data === window.YT.PlayerState.PLAYING) {
+                setPlaying(true);
+              }
+
+              if (
+                event.data === window.YT.PlayerState.PAUSED ||
+                event.data === window.YT.PlayerState.ENDED
+              ) {
+                setPlaying(false);
+              }
+
+              if (event.data === window.YT.PlayerState.ENDED) {
+                completeVideo(activeIndexRef.current);
+              }
             }
           }
-        }
-      });
+        });
 
-      progressTimerRef.current = setInterval(() => {
-        const player = playerRef.current;
-        if (!player?.getCurrentTime) return;
+        progressTimerRef.current = setInterval(() => {
+          const player = playerRef.current;
+          if (!player?.getCurrentTime) return;
 
-        const time = Number(player.getCurrentTime() || 0);
-        const videoDuration = Number(player.getDuration() || 0);
+          const time = Number(player.getCurrentTime() || 0);
+          const videoDuration = Number(player.getDuration() || 0);
 
-        setCurrentTime(time);
-        if (videoDuration) setDuration(videoDuration);
+          setCurrentTime(time);
+          if (videoDuration) setDuration(videoDuration);
 
-        const completed = completedIndexes.has(activeIndexRef.current);
+          const completed = completedIndexes.has(activeIndexRef.current);
 
-        if (!completed && time > maxWatchedRef.current) {
-          maxWatchedRef.current = time;
-          setMaxWatched(time);
-          queueSaveProgress(activeIndexRef.current, time);
-        }
+          if (!completed && time > maxWatchedRef.current) {
+            maxWatchedRef.current = time;
+            setMaxWatched(time);
+            queueSaveProgress(activeIndexRef.current, time);
+          }
 
-        if (!completed && videoDuration > 0 && time >= videoDuration - 1) {
-          completeVideo(activeIndexRef.current);
-        }
-      }, 500);
+          if (!completed && videoDuration > 0 && time >= videoDuration - 1) {
+            completeVideo(activeIndexRef.current);
+          }
+        }, 500);
+      } catch (error) {
+        console.error('Failed to setup YouTube player:', error);
+        setMessage(error.message || 'Could not load video player.');
+      }
     }
 
     setupPlayer();
@@ -404,7 +437,13 @@ export default function NewAgentCourse() {
       cancelled = true;
       if (progressTimerRef.current) clearInterval(progressTimerRef.current);
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      if (playerRef.current?.destroy) playerRef.current.destroy();
+
+      try {
+        if (playerRef.current?.destroy) playerRef.current.destroy();
+      } catch (error) {
+        console.warn('YouTube player cleanup skipped:', error);
+      }
+
       playerRef.current = null;
     };
   }, [activeIndex, youtubeId, sessionUserId]);
@@ -646,11 +685,9 @@ export default function NewAgentCourse() {
                   background: 'rgba(0,0,0,0.35)'
                 }}
               >
-                <div
-                  key={`${activeIndex}-${youtubeId}`}
-                  ref={playerContainerRef}
-                  style={{ width: '100%', height: '100%' }}
-                />
+                <div id={playerHostId} style={{ width: '100%', height: '100%' }}>
+                  <div id={`${playerHostId}-inner`} />
+                </div>
               </div>
 
               <div className="top-gap" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
