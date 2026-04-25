@@ -71,6 +71,19 @@ function formatTime(seconds) {
   return `${mins}:${String(secs).padStart(2, '0')}`;
 }
 
+function forcePlayerSize(player) {
+  try {
+    const iframe = player?.getIframe?.();
+    if (!iframe) return;
+
+    iframe.style.width = '100%';
+    iframe.style.height = '100%';
+    iframe.style.display = 'block';
+  } catch (error) {
+    console.warn('Could not resize YouTube player:', error);
+  }
+}
+
 function loadYouTubeApi() {
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined') {
@@ -349,7 +362,7 @@ export default function NewAgentCourse() {
 
       const playerMount = document.getElementById(playerHostId);
       if (playerMount) {
-        playerMount.innerHTML = `<div id="${playerHostId}-inner"></div>`;
+        playerMount.innerHTML = `<div id="${playerHostId}-inner" style="width:100%;height:100%;"></div>`;
       }
 
       try {
@@ -358,6 +371,8 @@ export default function NewAgentCourse() {
         if (cancelled) return;
 
         playerRef.current = new YT.Player(`${playerHostId}-inner`, {
+          width: '100%',
+          height: '100%',
           videoId: youtubeId,
           playerVars: {
             rel: 0,
@@ -372,6 +387,8 @@ export default function NewAgentCourse() {
               if (cancelled) return;
 
               const player = event.target;
+              forcePlayerSize(player);
+
               const videoDuration = Number(player.getDuration() || 0);
 
               setDuration(videoDuration);
@@ -406,6 +423,8 @@ export default function NewAgentCourse() {
         progressTimerRef.current = setInterval(() => {
           const player = playerRef.current;
           if (!player?.getCurrentTime) return;
+
+          forcePlayerSize(player);
 
           const time = Number(player.getCurrentTime() || 0);
           const videoDuration = Number(player.getDuration() || 0);
@@ -686,11 +705,19 @@ export default function NewAgentCourse() {
                 }}
               >
                 <div id={playerHostId} style={{ width: '100%', height: '100%' }}>
-                  <div id={`${playerHostId}-inner`} />
+                  <div id={`${playerHostId}-inner`} style={{ width: '100%', height: '100%' }} />
                 </div>
               </div>
 
-              <div className="top-gap" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div
+                className="top-gap"
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'auto minmax(0, 1fr) auto',
+                  gap: 12,
+                  alignItems: 'center'
+                }}
+              >
                 <button
                   className="btn btn-primary"
                   type="button"
@@ -700,12 +727,6 @@ export default function NewAgentCourse() {
                   {playing ? 'Pause' : 'Play'}
                 </button>
 
-                <div style={{ fontSize: 13, opacity: 0.8, minWidth: 92 }}>
-                  {formatTime(currentTime)} / {formatTime(duration)}
-                </div>
-              </div>
-
-              <div style={{ marginTop: 14 }}>
                 <input
                   type="range"
                   min="0"
@@ -716,14 +737,26 @@ export default function NewAgentCourse() {
                   disabled={!videoReady}
                 />
 
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, opacity: 0.7 }}>
-                  <span>Watched: {formatTime(maxWatched)}</span>
-                  <span>
-                    {completedIndexes.has(activeIndex)
-                      ? 'Completed'
-                      : `Forward locked at ${formatTime(maxWatched)}`}
-                  </span>
+                <div style={{ fontSize: 13, opacity: 0.8, whiteSpace: 'nowrap' }}>
+                  {formatTime(currentTime)} / {formatTime(duration)}
                 </div>
+              </div>
+
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: 12,
+                  opacity: 0.7,
+                  marginTop: 6
+                }}
+              >
+                <span>Watched: {formatTime(maxWatched)}</span>
+                <span>
+                  {completedIndexes.has(activeIndex)
+                    ? 'Completed'
+                    : `Forward locked at ${formatTime(maxWatched)}`}
+                </span>
               </div>
 
               <div style={{ marginTop: 12, fontSize: 13, opacity: 0.75 }}>
