@@ -3,7 +3,7 @@ import { supabase } from '../../lib/supabaseClient';
 import DataTable from '../../components/DataTable';
 import { writeAdminLog } from '../../lib/adminLog';
 
-const COURSE_VIDEO_COUNT = 10;
+const COURSE_VIDEO_COUNT = 9;
 
 function statusLabel(status) {
   if (status === 'approved') return 'Approved';
