@@ -3,54 +3,49 @@ import { supabase } from '../../lib/supabaseClient';
 
 const COURSE_VIDEOS = [
   {
-    title: 'Intro Video',
-    description: 'Welcome to Momentum X and what this course is going to prepare you for.',
-    url: ''
+    title: 'Intro',
+    description: 'Course intro and what new agents need to understand first.',
+    url: 'https://youtu.be/Ed-3HnJ7sXE'
   },
   {
-    title: 'Why Most People Fail the Business',
-    description: 'The real reasons agents quit, lose focus, or never build momentum.',
-    url: ''
+    title: 'Why People Fail',
+    description: 'Why most people fail in the business and what to avoid.',
+    url: 'https://youtu.be/qD9nHMHi_6g'
   },
   {
-    title: 'Why Anyone Can Do It',
-    description: 'The mindset, activity, and consistency that makes this business simple.',
-    url: ''
+    title: 'Anyone Can Do It',
+    description: 'Why anyone can succeed if they follow the system.',
+    url: 'https://youtu.be/KmL0w2wWgPw'
   },
   {
-    title: 'Day-to-Day as an Agent',
-    description: 'What your daily schedule should look like and what actually matters.',
-    url: ''
+    title: 'What Is an IUL and Where to Go',
+    description: 'What an IUL is and which direction/company to take people.',
+    url: 'https://youtu.be/PcnmOvwMBJ8'
   },
   {
-    title: 'What Is an IUL + Which Company to Take People To',
-    description: 'Basic IUL explanation and where to place people.',
-    url: ''
+    title: 'How to Get Paid + Day to Day as an Agent',
+    description: 'How agents get paid and what the day-to-day looks like.',
+    url: 'https://youtu.be/eMqrmrULL58'
   },
   {
-    title: 'How Agents Get Paid',
-    description: 'How commissions work, when agents get paid, and what to expect.',
-    url: ''
+    title: 'Paid Leads',
+    description: 'Paid leads, when to buy, and how to think about lead flow.',
+    url: 'https://youtu.be/L-soCdg_DHM'
   },
   {
-    title: 'Paid Leads: When to Buy Leads',
-    description: 'When to buy leads, how to think about lead flow, and how not to waste money.',
-    url: ''
-  },
-  {
-    title: 'Lead Spend + Profitability',
-    description: 'How much agents spend, what profitable lead spend looks like, and how to scale.',
-    url: ''
-  },
-  {
-    title: 'Cameras on Discord and Zoom',
-    description: 'Why cameras matter and why agents cannot hide in person or on team calls.',
-    url: ''
+    title: 'Cameras on Video',
+    description: 'Why cameras matter on Discord/Zoom and why agents cannot hide.',
+    url: 'https://youtu.be/5CptFiykupY'
   },
   {
     title: 'Chargebacks',
-    description: 'What chargebacks are, how they happen, and how to protect yourself.',
-    url: ''
+    description: 'What chargebacks are and how to prevent them.',
+    url: 'https://youtu.be/3Oxzuc-qRgQ'
+  },
+  {
+    title: 'Final Voice Note Instructions',
+    description: 'Final video explaining what to do for the voice note.',
+    url: 'https://youtu.be/CIhV9yg63gA'
   }
 ];
 
@@ -62,29 +57,14 @@ function getStatusLabel(status) {
   return 'Not Started';
 }
 
-function getVideoEmbed(url) {
-  if (!url) return null;
-
-  if (url.includes('youtube.com/watch?v=')) {
-    const id = url.split('v=')[1]?.split('&')[0];
-    return id ? `https://www.youtube.com/embed/${id}` : null;
-  }
-
-  if (url.includes('youtu.be/')) {
-    const id = url.split('youtu.be/')[1]?.split('?')[0];
-    return id ? `https://www.youtube.com/embed/${id}` : null;
-  }
-
-  if (url.includes('vimeo.com/')) {
-    const id = url.split('vimeo.com/')[1]?.split('?')[0];
-    return id ? `https://player.vimeo.com/video/${id}` : null;
-  }
-
-  return null;
+function getYouTubeId(url) {
+  if (!url) return '';
+  if (url.includes('youtube.com/watch?v=')) return url.split('v=')[1]?.split('&')[0] || '';
+  if (url.includes('youtu.be/')) return url.split('youtu.be/')[1]?.split('?')[0] || '';
+  return '';
 }
 
 export default function NewAgentCourse() {
-  const videoRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
 
@@ -194,7 +174,7 @@ export default function NewAgentCourse() {
           agent_id: sessionUserId,
           video_index: index,
           completed: true,
-          watched_seconds: Math.floor(videoRef.current?.currentTime || 0),
+          watched_seconds: 0,
           completed_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         },
@@ -232,9 +212,7 @@ export default function NewAgentCourse() {
       chunksRef.current = [];
 
       recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          chunksRef.current.push(event.data);
-        }
+        if (event.data.size > 0) chunksRef.current.push(event.data);
       };
 
       recorder.onstop = () => {
@@ -245,7 +223,6 @@ export default function NewAgentCourse() {
 
         setRecordedBlob(blob);
         setRecordingUrl(url);
-
         stream.getTracks().forEach((track) => track.stop());
       };
 
@@ -313,18 +290,10 @@ export default function NewAgentCourse() {
   }
 
   const activeVideo = COURSE_VIDEOS[activeIndex] || null;
-  const embedUrl = getVideoEmbed(activeVideo?.url);
+  const youtubeId = getYouTubeId(activeVideo?.url);
 
   return (
-    <div
-      className="page"
-      style={{
-        height: '100%',
-        minHeight: 0,
-        overflow: 'auto',
-        paddingRight: 4
-      }}
-    >
+    <div className="page" style={{ height: '100%', minHeight: 0, overflow: 'auto', paddingRight: 4 }}>
       <div className="page-header">
         <div>
           <h1>New Agent Course</h1>
@@ -369,7 +338,7 @@ export default function NewAgentCourse() {
         <div className="glass top-gap" style={{ padding: 16 }}>
           <h3 style={{ marginTop: 0 }}>Pending Review</h3>
           <p style={{ marginBottom: 0 }}>
-            Your final submission is waiting for admin approval. Once approved, your full Momentum X access unlocks.
+            Your final submission is waiting for admin approval.
           </p>
         </div>
       ) : null}
@@ -378,7 +347,7 @@ export default function NewAgentCourse() {
         <div className="glass top-gap" style={{ padding: 16 }}>
           <h3 style={{ marginTop: 0 }}>Course Approved</h3>
           <p style={{ marginBottom: 0 }}>
-            Your course is complete. You can still come back here anytime to rewatch the training.
+            Your course is complete. You can still come back anytime to rewatch the training.
           </p>
         </div>
       ) : null}
@@ -443,69 +412,20 @@ export default function NewAgentCourse() {
               </h2>
               <p style={{ opacity: 0.75 }}>{activeVideo.description}</p>
 
-              {activeVideo.url ? (
-                embedUrl ? (
-                  <iframe
-                    title={activeVideo.title}
-                    src={embedUrl}
-                    style={{
-                      width: '100%',
-                      aspectRatio: '16 / 9',
-                      border: '1px solid rgba(255,255,255,0.08)',
-                      borderRadius: 14
-                    }}
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                    allowFullScreen
-                  />
-                ) : (
-                  <video
-                    ref={videoRef}
-                    src={activeVideo.url}
-                    controls={false}
-                    controlsList="nodownload noplaybackrate"
-                    disablePictureInPicture
-                    onEnded={() => markVideoComplete(activeIndex)}
-                    style={{
-                      width: '100%',
-                      borderRadius: 14,
-                      border: '1px solid rgba(255,255,255,0.08)'
-                    }}
-                  />
-                )
-              ) : (
-                <div
-                  style={{
-                    minHeight: 260,
-                    borderRadius: 16,
-                    border: '1px dashed rgba(255,255,255,0.18)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    textAlign: 'center',
-                    padding: 20,
-                    background: 'rgba(255,255,255,0.02)'
-                  }}
-                >
-                  <div>
-                    <div style={{ fontSize: 24, fontWeight: 800 }}>Video Placeholder</div>
-                    <div style={{ opacity: 0.75, marginTop: 8 }}>
-                      Add the video URL later. For now, use the button below to test course progress.
-                    </div>
-                  </div>
-                </div>
-              )}
+              <iframe
+                title={activeVideo.title}
+                src={`https://www.youtube.com/embed/${youtubeId}?rel=0&modestbranding=1&controls=0&disablekb=1`}
+                style={{
+                  width: '100%',
+                  aspectRatio: '16 / 9',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 14
+                }}
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+              />
 
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
-                {activeVideo.url && !embedUrl ? (
-                  <button
-                    className="btn btn-primary"
-                    type="button"
-                    onClick={() => videoRef.current?.play()}
-                  >
-                    Play Video
-                  </button>
-                ) : null}
-
                 <button
                   className="btn btn-primary"
                   type="button"
@@ -520,7 +440,7 @@ export default function NewAgentCourse() {
             <>
               <h2 style={{ marginTop: 0 }}>Final Voice Recording</h2>
               <p style={{ opacity: 0.75 }}>
-                Record or submit your final voice assignment. After you submit, an admin must approve it before your full access unlocks.
+                Record your final voice assignment. After you submit, an admin must approve it before your full access unlocks.
               </p>
 
               <div className="glass" style={{ padding: 14, border: '1px solid rgba(255,255,255,0.08)' }}>
@@ -529,7 +449,7 @@ export default function NewAgentCourse() {
                   <li>Who you are and why you joined Momentum X.</li>
                   <li>What you learned from the course.</li>
                   <li>How you are going to approach leads, calls, Zoom, and follow-up.</li>
-                  <li>That you understand chargebacks and the expectations.</li>
+                  <li>That you understand chargebacks and expectations.</li>
                 </ul>
               </div>
 
@@ -557,7 +477,7 @@ export default function NewAgentCourse() {
                   rows={4}
                   value={finalNote}
                   onChange={(e) => setFinalNote(e.target.value)}
-                  placeholder="If you sent the voice recording to Logan, write that here..."
+                  placeholder="If you sent the voice recording to Logan instead, write that here..."
                 />
               </label>
 
