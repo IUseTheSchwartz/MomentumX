@@ -4,23 +4,10 @@ import { writeAdminLog } from '../../lib/adminLog';
 
 const PROGRAM_DAYS = 90;
 
-const days = [
-  'monday',
-  'tuesday',
-  'wednesday',
-  'thursday',
-  'friday',
-  'saturday',
-  'sunday'
-];
-
-const defaultSettings = {
-  id: 1,
-  weekly_amount: 200,
-  aged_amount: 200,
-  fresh_amount: 0,
-  day_of_week: 'monday',
-  active: true
+const blankSetup = {
+  name: '',
+  aged_amount: '200',
+  fresh_amount: '0'
 };
 
 function getDaysLeft(profile) {
@@ -38,30 +25,42 @@ function isActiveProgramAgent(profile) {
   if (!profile?.lead_program_active) return false;
   if (profile?.leads_paused) return false;
   if (profile?.lead_access_banned) return false;
-  return getDaysLeft(profile) > 0;
+  if (getDaysLeft(profile) <= 0) return false;
+
+  const allowedLeadTypes = Array.isArray(profile.allowed_lead_types)
+    ? profile.allowed_lead_types.filter(Boolean)
+    : [];
+
+  return allowedLeadTypes.length > 0;
+}
+
+function formatNumber(value) {
+  return Number(value || 0).toLocaleString();
 }
 
 export default function Distribution() {
-  const [settings, setSettings] = useState(defaultSettings);
+  const [setups, setSetups] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [inventory, setInventory] = useState({
     aged: 0,
     fresh: 0
   });
+  const [form, setForm] = useState(blankSetup);
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
-  const [running, setRunning] = useState(false);
+  const [runningSetupId, setRunningSetupId] = useState('');
+  const [confirmSetup, setConfirmSetup] = useState(null);
 
   async function load() {
     setMessage('');
 
-    const [{ data: settingsRow }, { data: profileRows }, { count: agedCount }, { count: freshCount }] =
+    const [{ data: setupRows }, { data: profileRows }, { count: agedCount }, { count: freshCount }] =
       await Promise.all([
         supabase
-          .from('lead_distribution_settings')
+          .from('lead_distribution_setups')
           .select('*')
-          .eq('id', 1)
-          .maybeSingle(),
+          .eq('active', true)
+          .order('created_at', { ascending: false }),
         supabase
           .from('profiles')
           .select(
@@ -82,7 +81,7 @@ export default function Distribution() {
           .eq('status', 'New')
       ]);
 
-    setSettings(settingsRow || defaultSettings);
+    setSetups(setupRows || []);
     setProfiles(profileRows || []);
     setInventory({
       aged: agedCount || 0,
@@ -102,69 +101,111 @@ export default function Distribution() {
     return profiles.filter((profile) => profile.lead_program_active && getDaysLeft(profile) <= 0);
   }, [profiles]);
 
-  const estimatedLeadNeed = useMemo(() => {
-    return activeAgents.length * Number(settings.weekly_amount || 0);
-  }, [activeAgents.length, settings.weekly_amount]);
+  function getRunPreview(setup) {
+    const agedPerAgent = Number(setup?.aged_amount || 0);
+    const freshPerAgent = Number(setup?.fresh_amount || 0);
+    const agentCount = activeAgents.length;
 
-  async function saveSettings(e) {
+    return {
+      agentCount,
+      agedPerAgent,
+      freshPerAgent,
+      totalPerAgent: agedPerAgent + freshPerAgent,
+      totalAged: agentCount * agedPerAgent,
+      totalFresh: agentCount * freshPerAgent,
+      totalLeads: agentCount * (agedPerAgent + freshPerAgent)
+    };
+  }
+
+  async function createSetup(e) {
     e.preventDefault();
     setMessage('');
     setSaving(true);
 
     try {
-      const agedAmount = Number(settings.aged_amount || 0);
-      const freshAmount = Number(settings.fresh_amount || 0);
-      const weeklyAmount = agedAmount + freshAmount;
+      const name = form.name.trim();
+      const agedAmount = Number(form.aged_amount || 0);
+      const freshAmount = Number(form.fresh_amount || 0);
 
-      if (weeklyAmount <= 0) {
+      if (!name) {
+        setMessage('Name the setup first.');
+        return;
+      }
+
+      if (agedAmount + freshAmount <= 0) {
         setMessage('Set at least 1 aged or fresh lead.');
         return;
       }
 
       const payload = {
-        id: 1,
-        weekly_amount: weeklyAmount,
+        name,
         aged_amount: agedAmount,
         fresh_amount: freshAmount,
-        day_of_week: settings.day_of_week || 'monday',
-        active: Boolean(settings.active),
+        active: true,
         updated_at: new Date().toISOString()
       };
 
       const { data, error } = await supabase
-        .from('lead_distribution_settings')
-        .upsert(payload, { onConflict: 'id' })
+        .from('lead_distribution_setups')
+        .insert(payload)
         .select()
         .single();
 
       if (error) throw error;
 
       await writeAdminLog({
-        action: 'Updated lead distribution settings',
-        targetType: 'lead_distribution_settings',
-        targetId: '1',
+        action: 'Created lead distribution setup',
+        targetType: 'lead_distribution_setup',
+        targetId: data.id,
         details: payload
       });
 
-      setSettings(data || payload);
-      setMessage('Distribution settings saved.');
+      setForm(blankSetup);
+      setMessage('Setup created.');
       await load();
     } catch (error) {
-      setMessage(error.message || 'Could not save distribution settings.');
+      setMessage(error.message || 'Could not create setup.');
     } finally {
       setSaving(false);
     }
   }
 
-  async function runDistribution() {
+  async function deleteSetup(setup) {
     setMessage('');
-    setRunning(true);
+
+    const { error } = await supabase
+      .from('lead_distribution_setups')
+      .update({
+        active: false,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', setup.id);
+
+    if (error) {
+      setMessage(error.message || 'Could not delete setup.');
+      return;
+    }
+
+    await writeAdminLog({
+      action: 'Deleted lead distribution setup',
+      targetType: 'lead_distribution_setup',
+      targetId: setup.id,
+      details: setup
+    });
+
+    setMessage('Setup deleted.');
+    await load();
+  }
+
+  async function runDistribution(setup) {
+    setMessage('');
+    setRunningSetupId(setup.id);
 
     try {
       const res = await fetch('/.netlify/functions/distribution-run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force: true })
+        body: JSON.stringify({ setupId: setup.id })
       });
 
       const data = await res.json();
@@ -174,25 +215,26 @@ export default function Distribution() {
       }
 
       await writeAdminLog({
-        action: 'Forced 90-day program distribution run',
-        targetType: 'lead_distribution_settings',
-        targetId: '1',
+        action: 'Ran manual 90-day lead distribution',
+        targetType: 'lead_distribution_setup',
+        targetId: setup.id,
         details: data.summary || {}
       });
 
       setMessage(
-        `Run complete: ${data.summary?.assignedTotal || 0} total leads assigned to ${
+        `Run complete: ${formatNumber(data.summary?.assignedTotal || 0)} total leads assigned to ${
           data.summary?.eligibleAgents || 0
-        } active agents. Aged: ${data.summary?.assignedAged || 0}. Fresh: ${
+        } active agents. Aged: ${formatNumber(data.summary?.assignedAged || 0)}. Fresh: ${formatNumber(
           data.summary?.assignedFresh || 0
-        }.`
+        )}.`
       );
 
+      setConfirmSetup(null);
       await load();
     } catch (error) {
       setMessage(error.message || 'Distribution run failed.');
     } finally {
-      setRunning(false);
+      setRunningSetupId('');
     }
   }
 
@@ -219,57 +261,56 @@ export default function Distribution() {
         <div className="page-header">
           <div>
             <h1>Distribution</h1>
-            <p>Send weekly leads to active agents inside their 0–90 day Momentum X window.</p>
+            <p>Create manual lead-run setups and send them to active 0–90 day agents only.</p>
           </div>
         </div>
 
-        <div
-          className="grid grid-4"
-          style={{
-            marginBottom: 14
-          }}
-        >
+        <div className="grid grid-4" style={{ marginBottom: 14 }}>
           <div className="glass" style={{ padding: 14 }}>
             <div style={{ fontSize: 13, opacity: 0.75 }}>Active Agents</div>
             <div style={{ fontSize: 28, fontWeight: 800 }}>{activeAgents.length}</div>
-            <div style={{ fontSize: 13, opacity: 0.75 }}>Eligible for this run</div>
+            <div style={{ fontSize: 13, opacity: 0.75 }}>Eligible for manual runs</div>
           </div>
 
           <div className="glass" style={{ padding: 14 }}>
-            <div style={{ fontSize: 13, opacity: 0.75 }}>Estimated Need</div>
-            <div style={{ fontSize: 28, fontWeight: 800 }}>{estimatedLeadNeed}</div>
-            <div style={{ fontSize: 13, opacity: 0.75 }}>Total leads if fully filled</div>
+            <div style={{ fontSize: 13, opacity: 0.75 }}>Saved Setups</div>
+            <div style={{ fontSize: 28, fontWeight: 800 }}>{setups.length}</div>
+            <div style={{ fontSize: 13, opacity: 0.75 }}>Manual run templates</div>
           </div>
 
           <div className="glass" style={{ padding: 14 }}>
             <div style={{ fontSize: 13, opacity: 0.75 }}>Aged Inventory</div>
-            <div style={{ fontSize: 28, fontWeight: 800 }}>{inventory.aged}</div>
+            <div style={{ fontSize: 28, fontWeight: 800 }}>{formatNumber(inventory.aged)}</div>
             <div style={{ fontSize: 13, opacity: 0.75 }}>Unassigned New leads</div>
           </div>
 
           <div className="glass" style={{ padding: 14 }}>
             <div style={{ fontSize: 13, opacity: 0.75 }}>Fresh Inventory</div>
-            <div style={{ fontSize: 28, fontWeight: 800 }}>{inventory.fresh}</div>
+            <div style={{ fontSize: 28, fontWeight: 800 }}>{formatNumber(inventory.fresh)}</div>
             <div style={{ fontSize: 13, opacity: 0.75 }}>Unassigned New leads</div>
           </div>
         </div>
 
-        <form className="form glass" onSubmit={saveSettings}>
+        <form className="form glass" onSubmit={createSetup}>
+          <h2 style={{ marginTop: 0 }}>Create Setup</h2>
+
           <div className="form-grid">
+            <label>
+              Setup Name
+              <input
+                value={form.name}
+                onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
+                placeholder="Example: 200 aged / 15 fresh"
+              />
+            </label>
+
             <label>
               Aged Leads Per Active Agent
               <input
                 type="number"
                 min="0"
-                value={settings.aged_amount}
-                onChange={(e) =>
-                  setSettings((s) => ({
-                    ...s,
-                    aged_amount: e.target.value,
-                    weekly_amount: Number(e.target.value || 0) + Number(s.fresh_amount || 0)
-                  }))
-                }
-                placeholder="200"
+                value={form.aged_amount}
+                onChange={(e) => setForm((s) => ({ ...s, aged_amount: e.target.value }))}
               />
             </label>
 
@@ -278,75 +319,24 @@ export default function Distribution() {
               <input
                 type="number"
                 min="0"
-                value={settings.fresh_amount}
-                onChange={(e) =>
-                  setSettings((s) => ({
-                    ...s,
-                    fresh_amount: e.target.value,
-                    weekly_amount: Number(s.aged_amount || 0) + Number(e.target.value || 0)
-                  }))
-                }
-                placeholder="0"
+                value={form.fresh_amount}
+                onChange={(e) => setForm((s) => ({ ...s, fresh_amount: e.target.value }))}
               />
             </label>
 
             <label>
-              Total Leads Per Active Agent
+              Total Per Active Agent
               <input
                 type="number"
-                value={Number(settings.aged_amount || 0) + Number(settings.fresh_amount || 0)}
+                value={Number(form.aged_amount || 0) + Number(form.fresh_amount || 0)}
                 readOnly
               />
             </label>
-
-            <label>
-              Weekly Run Day
-              <select
-                value={settings.day_of_week || 'monday'}
-                onChange={(e) =>
-                  setSettings((s) => ({
-                    ...s,
-                    day_of_week: e.target.value
-                  }))
-                }
-              >
-                {days.map((day) => (
-                  <option key={day} value={day}>
-                    {day}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label>
-              Scheduled Runs
-              <select
-                value={settings.active ? 'active' : 'inactive'}
-                onChange={(e) =>
-                  setSettings((s) => ({
-                    ...s,
-                    active: e.target.value === 'active'
-                  }))
-                }
-              >
-                <option value="active">Enabled</option>
-                <option value="inactive">Disabled</option>
-              </select>
-            </label>
           </div>
 
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
+          <div style={{ marginTop: 14 }}>
             <button className="btn btn-primary" type="submit" disabled={saving}>
-              {saving ? 'Saving...' : 'Save Settings'}
-            </button>
-
-            <button
-              className="btn btn-primary"
-              type="button"
-              onClick={runDistribution}
-              disabled={running}
-            >
-              {running ? 'Running...' : 'Run Distribution Now'}
+              {saving ? 'Saving...' : 'Save Setup'}
             </button>
           </div>
 
@@ -354,12 +344,62 @@ export default function Distribution() {
         </form>
 
         <div className="glass top-gap" style={{ padding: 16 }}>
-          <h2 style={{ marginTop: 0 }}>Run Rules</h2>
-          <p style={{ marginBottom: 0, opacity: 0.8 }}>
-            This sends leads only to agents marked Active on the Agents page, who are not paused,
-            not ineligible, and still have days left in their 90-day window. Agents keep access to
-            their old leads after their 90 days end.
-          </p>
+          <h2 style={{ marginTop: 0 }}>Saved Setups</h2>
+
+          {!setups.length ? (
+            <div style={{ opacity: 0.75 }}>No setups created yet.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {setups.map((setup) => {
+                const preview = getRunPreview(setup);
+
+                return (
+                  <div
+                    key={setup.id}
+                    style={{
+                      padding: 14,
+                      borderRadius: 14,
+                      border: '1px solid rgba(255,255,255,0.08)',
+                      display: 'grid',
+                      gridTemplateColumns: 'minmax(0, 1fr) auto',
+                      gap: 12,
+                      alignItems: 'center'
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: 18, fontWeight: 800 }}>{setup.name}</div>
+                      <div style={{ fontSize: 13, opacity: 0.75, marginTop: 4 }}>
+                        {formatNumber(setup.aged_amount)} aged + {formatNumber(setup.fresh_amount)} fresh per active agent
+                      </div>
+                      <div style={{ fontSize: 13, opacity: 0.75, marginTop: 4 }}>
+                        Current preview: {formatNumber(preview.totalLeads)} total leads to {preview.agentCount} active agents
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      <button
+                        className="btn btn-primary btn-small"
+                        type="button"
+                        onClick={() => setConfirmSetup(setup)}
+                        disabled={runningSetupId === setup.id}
+                      >
+                        {runningSetupId === setup.id ? 'Running...' : 'Run'}
+                      </button>
+
+                      <button
+                        className="btn btn-danger btn-small"
+                        type="button"
+                        onClick={() => deleteSetup(setup)}
+                        disabled={runningSetupId === setup.id}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div className="glass top-gap" style={{ padding: 16 }}>
@@ -436,6 +476,114 @@ export default function Distribution() {
           </div>
         ) : null}
       </div>
+
+      {confirmSetup ? (
+        <div
+          onClick={() => setConfirmSetup(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1000,
+            background: 'rgba(0,0,0,0.68)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 20
+          }}
+        >
+          <div
+            className="glass"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: 'min(620px, 96vw)',
+              padding: 20,
+              border: '1px solid rgba(255,255,255,0.12)'
+            }}
+          >
+            {(() => {
+              const preview = getRunPreview(confirmSetup);
+
+              return (
+                <>
+                  <h2 style={{ marginTop: 0 }}>Are you sure?</h2>
+
+                  <p style={{ opacity: 0.8 }}>
+                    You are about to run <strong>{confirmSetup.name}</strong>.
+                  </p>
+
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                      gap: 10,
+                      marginTop: 14
+                    }}
+                  >
+                    <div className="glass" style={{ padding: 12 }}>
+                      <div style={{ fontSize: 13, opacity: 0.75 }}>Active Agents</div>
+                      <div style={{ fontSize: 24, fontWeight: 800 }}>{preview.agentCount}</div>
+                    </div>
+
+                    <div className="glass" style={{ padding: 12 }}>
+                      <div style={{ fontSize: 13, opacity: 0.75 }}>Total Leads</div>
+                      <div style={{ fontSize: 24, fontWeight: 800 }}>
+                        {formatNumber(preview.totalLeads)}
+                      </div>
+                    </div>
+
+                    <div className="glass" style={{ padding: 12 }}>
+                      <div style={{ fontSize: 13, opacity: 0.75 }}>Aged</div>
+                      <div style={{ fontSize: 24, fontWeight: 800 }}>
+                        {formatNumber(preview.totalAged)}
+                      </div>
+                      <div style={{ fontSize: 12, opacity: 0.7 }}>
+                        {formatNumber(preview.agedPerAgent)} per agent
+                      </div>
+                    </div>
+
+                    <div className="glass" style={{ padding: 12 }}>
+                      <div style={{ fontSize: 13, opacity: 0.75 }}>Fresh</div>
+                      <div style={{ fontSize: 24, fontWeight: 800 }}>
+                        {formatNumber(preview.totalFresh)}
+                      </div>
+                      <div style={{ fontSize: 12, opacity: 0.7 }}>
+                        {formatNumber(preview.freshPerAgent)} per agent
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 14, opacity: 0.8, fontSize: 14 }}>
+                    Inventory now: {formatNumber(inventory.aged)} aged and {formatNumber(inventory.fresh)} fresh.
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'flex-end',
+                      gap: 10,
+                      marginTop: 18,
+                      flexWrap: 'wrap'
+                    }}
+                  >
+                    <button className="btn btn-ghost" type="button" onClick={() => setConfirmSetup(null)}>
+                      Cancel
+                    </button>
+
+                    <button
+                      className="btn btn-primary"
+                      type="button"
+                      onClick={() => runDistribution(confirmSetup)}
+                      disabled={runningSetupId === confirmSetup.id || preview.agentCount <= 0}
+                    >
+                      {runningSetupId === confirmSetup.id ? 'Running...' : 'Yes, Run It'}
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
