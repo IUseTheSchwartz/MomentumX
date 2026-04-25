@@ -35,6 +35,3 @@
 
 [functions]
   directory = "netlify/functions"
-
-[functions."distribution-run"]
-  schedule = "0 12 * * 1"
