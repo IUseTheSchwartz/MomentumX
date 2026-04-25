@@ -18,14 +18,29 @@ export default function ProtectedRoute({ children }) {
   const [profileLoading, setProfileLoading] = useState(true);
   const [session, setSession] = useState(undefined);
   const [profile, setProfile] = useState(null);
+  const [courseStatus, setCourseStatus] = useState(null);
 
   const mountedRef = useRef(false);
   const bootedRef = useRef(false);
   const lastProfileRef = useRef(null);
   const profileLoadIdRef = useRef(0);
 
-  // 🔥 KEY FIX: detect auth callback route
   const isAuthCallback = window.location.pathname.includes('auth');
+
+  async function loadCourseStatus(userId) {
+    const { data, error } = await supabase
+      .from('agent_course_status')
+      .select('*')
+      .eq('agent_id', userId)
+      .maybeSingle();
+
+    if (error) {
+      setCourseStatus(null);
+      return;
+    }
+
+    setCourseStatus(data || null);
+  }
 
   async function loadProfileForSession(nextSession, { keepPreviousOnFailure = true } = {}) {
     const loadId = ++profileLoadIdRef.current;
@@ -35,6 +50,7 @@ export default function ProtectedRoute({ children }) {
     if (!nextSession) {
       lastProfileRef.current = null;
       setProfile(null);
+      setCourseStatus(null);
       setProfileLoading(false);
       return;
     }
@@ -52,6 +68,7 @@ export default function ProtectedRoute({ children }) {
       if (keepPreviousOnFailure && lastProfileRef.current) {
         setProfile(lastProfileRef.current);
       }
+      await loadCourseStatus(nextSession.user.id);
       setProfileLoading(false);
       return;
     }
@@ -70,13 +87,13 @@ export default function ProtectedRoute({ children }) {
       setProfile(safeProfile);
     }
 
+    await loadCourseStatus(nextSession.user.id);
     setProfileLoading(false);
   }
 
   useEffect(() => {
     mountedRef.current = true;
 
-    // 🔥 CRITICAL FIX: DO NOT RUN AUTH BOOT DURING CALLBACK
     if (bootedRef.current || isAuthCallback) {
       return () => {
         mountedRef.current = false;
@@ -109,6 +126,7 @@ export default function ProtectedRoute({ children }) {
 
         setSession(null);
         setProfile(null);
+        setCourseStatus(null);
         setAuthLoading(false);
         setProfileLoading(false);
       }
@@ -122,6 +140,7 @@ export default function ProtectedRoute({ children }) {
           lastProfileRef.current = null;
           setSession(null);
           setProfile(null);
+          setCourseStatus(null);
           setAuthLoading(false);
           setProfileLoading(false);
           return;
@@ -162,6 +181,15 @@ export default function ProtectedRoute({ children }) {
 
   if (profile?.lead_access_banned) {
     return <Navigate to="/ineligible" replace />;
+  }
+
+  const path = window.location.pathname;
+  const isAdmin = Boolean(profile?.is_admin);
+  const isCourseApproved = courseStatus?.status === 'approved';
+  const isCoursePage = path === '/app/course';
+
+  if (!isAdmin && path.startsWith('/app') && !isCoursePage && !isCourseApproved) {
+    return <Navigate to="/app/course" replace />;
   }
 
   return children;
