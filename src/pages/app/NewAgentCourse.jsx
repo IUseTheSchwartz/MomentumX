@@ -64,9 +64,44 @@ function getYouTubeId(url) {
   return '';
 }
 
+function formatTime(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds || 0)));
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${mins}:${String(secs).padStart(2, '0')}`;
+}
+
+function loadYouTubeApi() {
+  return new Promise((resolve) => {
+    if (window.YT?.Player) {
+      resolve(window.YT);
+      return;
+    }
+
+    const existing = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
+
+    window.onYouTubeIframeAPIReady = () => {
+      resolve(window.YT);
+    };
+
+    if (!existing) {
+      const tag = document.createElement('script');
+      tag.src = 'https://www.youtube.com/iframe_api';
+      document.body.appendChild(tag);
+    }
+  });
+}
+
 export default function NewAgentCourse() {
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
+
+  const playerRef = useRef(null);
+  const playerContainerRef = useRef(null);
+  const progressTimerRef = useRef(null);
+  const activeIndexRef = useRef(0);
+  const maxWatchedRef = useRef(0);
+  const saveTimerRef = useRef(null);
 
   const [sessionUserId, setSessionUserId] = useState('');
   const [status, setStatus] = useState(null);
@@ -74,6 +109,12 @@ export default function NewAgentCourse() {
   const [activeIndex, setActiveIndex] = useState(0);
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
+
+  const [videoReady, setVideoReady] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [maxWatched, setMaxWatched] = useState(0);
 
   const [recording, setRecording] = useState(false);
   const [recordedBlob, setRecordedBlob] = useState(null);
@@ -139,6 +180,9 @@ export default function NewAgentCourse() {
 
     return () => {
       if (recordingUrl) URL.revokeObjectURL(recordingUrl);
+      if (progressTimerRef.current) clearInterval(progressTimerRef.current);
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      if (playerRef.current?.destroy) playerRef.current.destroy();
     };
   }, []);
 
@@ -148,6 +192,14 @@ export default function NewAgentCourse() {
         .filter((row) => row.completed)
         .map((row) => Number(row.video_index))
     );
+  }, [progressRows]);
+
+  const progressByIndex = useMemo(() => {
+    const map = new Map();
+    (progressRows || []).forEach((row) => {
+      map.set(Number(row.video_index), row);
+    });
+    return map;
   }, [progressRows]);
 
   const videosCompleted = completedIndexes.size;
@@ -162,25 +214,30 @@ export default function NewAgentCourse() {
     return completedIndexes.has(index - 1) || Number(status?.current_step || 0) >= index;
   }
 
-  async function markVideoComplete(index) {
-    if (!sessionUserId || saving) return;
+  async function saveVideoProgress(index, watchedSeconds, completed = false) {
+    if (!sessionUserId) return;
 
-    setSaving(true);
-    setMessage('');
+    const existingRow = progressByIndex.get(index);
+    const nextWatched = Math.max(
+      Number(existingRow?.watched_seconds || 0),
+      Number(watchedSeconds || 0)
+    );
 
-    try {
-      await supabase.from('agent_course_video_progress').upsert(
-        {
-          agent_id: sessionUserId,
-          video_index: index,
-          completed: true,
-          watched_seconds: 0,
-          completed_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        },
-        { onConflict: 'agent_id,video_index' }
-      );
+    await supabase.from('agent_course_video_progress').upsert(
+      {
+        agent_id: sessionUserId,
+        video_index: index,
+        completed: completed || Boolean(existingRow?.completed),
+        watched_seconds: Math.floor(nextWatched),
+        completed_at: completed
+          ? existingRow?.completed_at || new Date().toISOString()
+          : existingRow?.completed_at || null,
+        updated_at: new Date().toISOString()
+      },
+      { onConflict: 'agent_id,video_index' }
+    );
 
+    if (completed) {
       const nextStep = Math.max(Number(status?.current_step || 0), index + 1);
       const nextStatus = status?.status === 'approved' ? 'approved' : 'in_progress';
 
@@ -195,11 +252,168 @@ export default function NewAgentCourse() {
 
       await load();
       setActiveIndex(Math.min(index + 1, COURSE_VIDEOS.length));
+    } else {
+      setProgressRows((rows) => {
+        const otherRows = (rows || []).filter((row) => Number(row.video_index) !== index);
+        return [
+          ...otherRows,
+          {
+            ...(existingRow || {}),
+            agent_id: sessionUserId,
+            video_index: index,
+            completed: Boolean(existingRow?.completed),
+            watched_seconds: Math.floor(nextWatched)
+          }
+        ].sort((a, b) => Number(a.video_index) - Number(b.video_index));
+      });
+    }
+  }
+
+  function queueSaveProgress(index, watchedSeconds) {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+
+    saveTimerRef.current = setTimeout(() => {
+      saveVideoProgress(index, watchedSeconds, false).catch((error) => {
+        console.error('Could not save video progress:', error);
+      });
+    }, 900);
+  }
+
+  async function completeVideo(index) {
+    if (!sessionUserId || saving || completedIndexes.has(index)) return;
+
+    setSaving(true);
+    setMessage('');
+
+    try {
+      await saveVideoProgress(index, duration || maxWatchedRef.current, true);
     } catch (error) {
       setMessage(error.message || 'Could not complete video.');
     } finally {
       setSaving(false);
     }
+  }
+
+  const activeVideo = COURSE_VIDEOS[activeIndex] || null;
+  const youtubeId = getYouTubeId(activeVideo?.url);
+
+  useEffect(() => {
+    activeIndexRef.current = activeIndex;
+
+    if (!activeVideo || !youtubeId) return;
+
+    let cancelled = false;
+
+    async function setupPlayer() {
+      setVideoReady(false);
+      setPlaying(false);
+      setCurrentTime(0);
+      setDuration(0);
+
+      const savedSeconds = Number(progressByIndex.get(activeIndex)?.watched_seconds || 0);
+      maxWatchedRef.current = savedSeconds;
+      setMaxWatched(savedSeconds);
+
+      if (progressTimerRef.current) clearInterval(progressTimerRef.current);
+      if (playerRef.current?.destroy) playerRef.current.destroy();
+
+      const YT = await loadYouTubeApi();
+
+      if (cancelled || !playerContainerRef.current) return;
+
+      playerRef.current = new YT.Player(playerContainerRef.current, {
+        videoId: youtubeId,
+        playerVars: {
+          rel: 0,
+          modestbranding: 1,
+          controls: 0,
+          disablekb: 1,
+          fs: 0,
+          playsinline: 1
+        },
+        events: {
+          onReady: (event) => {
+            if (cancelled) return;
+
+            const player = event.target;
+            const videoDuration = Number(player.getDuration() || 0);
+
+            setDuration(videoDuration);
+            setVideoReady(true);
+
+            if (savedSeconds > 0 && savedSeconds < videoDuration) {
+              player.seekTo(savedSeconds, true);
+              setCurrentTime(savedSeconds);
+            }
+          },
+          onStateChange: (event) => {
+            if (!window.YT) return;
+
+            if (event.data === window.YT.PlayerState.PLAYING) {
+              setPlaying(true);
+            }
+
+            if (
+              event.data === window.YT.PlayerState.PAUSED ||
+              event.data === window.YT.PlayerState.ENDED
+            ) {
+              setPlaying(false);
+            }
+
+            if (event.data === window.YT.PlayerState.ENDED) {
+              completeVideo(activeIndexRef.current);
+            }
+          }
+        }
+      });
+
+      progressTimerRef.current = setInterval(() => {
+        const player = playerRef.current;
+        if (!player?.getCurrentTime) return;
+
+        const time = Number(player.getCurrentTime() || 0);
+        const videoDuration = Number(player.getDuration() || 0);
+
+        setCurrentTime(time);
+        if (videoDuration) setDuration(videoDuration);
+
+        const completed = completedIndexes.has(activeIndexRef.current);
+
+        if (!completed && time > maxWatchedRef.current) {
+          maxWatchedRef.current = time;
+          setMaxWatched(time);
+          queueSaveProgress(activeIndexRef.current, time);
+        }
+      }, 500);
+    }
+
+    setupPlayer();
+
+    return () => {
+      cancelled = true;
+      if (progressTimerRef.current) clearInterval(progressTimerRef.current);
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [activeIndex, youtubeId, sessionUserId]);
+
+  function togglePlay() {
+    const player = playerRef.current;
+    if (!player) return;
+
+    if (playing) {
+      player.pauseVideo();
+    } else {
+      player.playVideo();
+    }
+  }
+
+  function handleSeek(value) {
+    const requested = Number(value || 0);
+    const allowedMax = completedIndexes.has(activeIndex) ? duration : maxWatchedRef.current;
+    const safeTime = Math.min(requested, allowedMax);
+
+    playerRef.current?.seekTo?.(safeTime, true);
+    setCurrentTime(safeTime);
   }
 
   async function startRecording() {
@@ -288,9 +502,6 @@ export default function NewAgentCourse() {
       setSubmittingFinal(false);
     }
   }
-
-  const activeVideo = COURSE_VIDEOS[activeIndex] || null;
-  const youtubeId = getYouTubeId(activeVideo?.url);
 
   return (
     <div className="page" style={{ height: '100%', minHeight: 0, overflow: 'auto', paddingRight: 4 }}>
@@ -412,28 +623,58 @@ export default function NewAgentCourse() {
               </h2>
               <p style={{ opacity: 0.75 }}>{activeVideo.description}</p>
 
-              <iframe
-                title={activeVideo.title}
-                src={`https://www.youtube.com/embed/${youtubeId}?rel=0&modestbranding=1&controls=0&disablekb=1`}
+              <div
                 style={{
                   width: '100%',
                   aspectRatio: '16 / 9',
                   border: '1px solid rgba(255,255,255,0.08)',
-                  borderRadius: 14
+                  borderRadius: 14,
+                  overflow: 'hidden',
+                  background: 'rgba(0,0,0,0.35)'
                 }}
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                allowFullScreen
-              />
+              >
+                <div ref={playerContainerRef} style={{ width: '100%', height: '100%' }} />
+              </div>
 
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
+              <div className="top-gap" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <button
                   className="btn btn-primary"
                   type="button"
-                  onClick={() => markVideoComplete(activeIndex)}
-                  disabled={saving || completedIndexes.has(activeIndex)}
+                  onClick={togglePlay}
+                  disabled={!videoReady}
                 >
-                  {completedIndexes.has(activeIndex) ? 'Completed' : saving ? 'Saving...' : 'Mark Complete'}
+                  {playing ? 'Pause' : 'Play'}
                 </button>
+
+                <div style={{ fontSize: 13, opacity: 0.8, minWidth: 92 }}>
+                  {formatTime(currentTime)} / {formatTime(duration)}
+                </div>
+              </div>
+
+              <div style={{ marginTop: 14 }}>
+                <input
+                  type="range"
+                  min="0"
+                  max={Math.max(1, Math.floor(duration || 1))}
+                  value={Math.min(Math.floor(currentTime || 0), Math.floor(duration || 1))}
+                  onChange={(e) => handleSeek(e.target.value)}
+                  style={{ width: '100%' }}
+                  disabled={!videoReady}
+                />
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, opacity: 0.7 }}>
+                  <span>Watched: {formatTime(maxWatched)}</span>
+                  <span>
+                    {completedIndexes.has(activeIndex)
+                      ? 'Completed'
+                      : `Forward locked at ${formatTime(maxWatched)}`}
+                  </span>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 12, fontSize: 13, opacity: 0.75 }}>
+                You can go back anytime. You can only go forward up to the farthest point you have watched.
+                This video completes automatically when it ends.
               </div>
             </>
           ) : (
