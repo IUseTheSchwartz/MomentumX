@@ -2,6 +2,8 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import { useEffect, useRef, useState } from 'react';
 
+export const VIEW_AS_AGENT_STORAGE_KEY = 'momentumx_view_as_agent';
+
 const fullAgentLinks = [
   ['/app/course', 'Course'],
   ['/app/dashboard', 'Dashboard'],
@@ -36,6 +38,15 @@ function withTimeout(promise, ms) {
       setTimeout(() => resolve({ timedOut: true }), ms);
     })
   ]);
+}
+
+function getStoredViewAsAgent() {
+  try {
+    const raw = window.localStorage.getItem(VIEW_AS_AGENT_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
 }
 
 function NavBadge({ count }) {
@@ -74,13 +85,17 @@ export default function AppShell({ admin = false }) {
     replacementRequests: 0,
     support: 0
   });
+  const [viewAsAgent, setViewAsAgent] = useState(() => getStoredViewAsAgent());
 
   const mountedRef = useRef(true);
   const lastProfileRef = useRef(null);
   const refreshInFlightRef = useRef(false);
   const navRefreshInFlightRef = useRef(false);
 
-  const courseApproved = courseStatus?.status === 'approved';
+  const isViewingAsAgent = Boolean(viewAsAgent?.id && profile?.is_admin);
+  const effectiveAgentId = isViewingAsAgent ? viewAsAgent.id : session?.user?.id || null;
+
+  const courseApproved = isViewingAsAgent || courseStatus?.status === 'approved';
   const isLockedAgent = !admin && !profile?.is_admin && !courseApproved;
   const links = admin ? adminLinks : isLockedAgent ? lockedAgentLinks : fullAgentLinks;
 
@@ -190,6 +205,20 @@ export default function AppShell({ admin = false }) {
   }
 
   useEffect(() => {
+    const handleStorage = () => {
+      setViewAsAgent(getStoredViewAsAgent());
+    };
+
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener('momentumx-view-as-agent-changed', handleStorage);
+
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('momentumx-view-as-agent-changed', handleStorage);
+    };
+  }, []);
+
+  useEffect(() => {
     mountedRef.current = true;
 
     async function loadProfileForSession(nextSession, { keepPreviousOnFailure = true } = {}) {
@@ -223,7 +252,7 @@ export default function AppShell({ admin = false }) {
         }
 
         await Promise.all([
-          loadCourseStatus(nextSession.user.id),
+          loadCourseStatus(effectiveAgentId || nextSession.user.id),
           loadNavCountsForUser(nextSession.user.id, admin)
         ]);
 
@@ -240,7 +269,7 @@ export default function AppShell({ admin = false }) {
         }
 
         await Promise.all([
-          loadCourseStatus(nextSession.user.id),
+          loadCourseStatus(effectiveAgentId || nextSession.user.id),
           loadNavCountsForUser(nextSession.user.id, admin)
         ]);
 
@@ -252,7 +281,7 @@ export default function AppShell({ admin = false }) {
       setProfile(safeProfile);
 
       await Promise.all([
-        loadCourseStatus(nextSession.user.id),
+        loadCourseStatus(effectiveAgentId || nextSession.user.id),
         loadNavCountsForUser(nextSession.user.id, admin)
       ]);
     }
@@ -291,6 +320,8 @@ export default function AppShell({ admin = false }) {
           replacementRequests: 0,
           support: 0
         });
+        window.localStorage.removeItem(VIEW_AS_AGENT_STORAGE_KEY);
+        setViewAsAgent(null);
         return;
       }
 
@@ -316,16 +347,17 @@ export default function AppShell({ admin = false }) {
       document.removeEventListener('visibilitychange', handleVisible);
       window.removeEventListener('focus', handleFocus);
     };
-  }, [admin]);
+  }, [admin, effectiveAgentId]);
 
   useEffect(() => {
     if (!session?.user?.id) return;
 
     loadNavCountsForUser(session.user.id, admin);
+    loadCourseStatus(effectiveAgentId || session.user.id);
 
     const intervalId = window.setInterval(() => {
       loadNavCountsForUser(session.user.id, admin);
-      loadCourseStatus(session.user.id);
+      loadCourseStatus(effectiveAgentId || session.user.id);
     }, REFRESH_INTERVAL_MS);
 
     const channel = supabase
@@ -353,7 +385,7 @@ export default function AppShell({ admin = false }) {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'agent_course_status' },
-        () => loadCourseStatus(session.user.id)
+        () => loadCourseStatus(effectiveAgentId || session.user.id)
       )
       .subscribe();
 
@@ -361,11 +393,20 @@ export default function AppShell({ admin = false }) {
       window.clearInterval(intervalId);
       supabase.removeChannel(channel);
     };
-  }, [session?.user?.id, admin]);
+  }, [session?.user?.id, admin, effectiveAgentId]);
 
   async function signOut() {
+    window.localStorage.removeItem(VIEW_AS_AGENT_STORAGE_KEY);
+    setViewAsAgent(null);
     await supabase.auth.signOut();
     navigate('/', { replace: true });
+  }
+
+  function exitViewAs() {
+    window.localStorage.removeItem(VIEW_AS_AGENT_STORAGE_KEY);
+    setViewAsAgent(null);
+    window.dispatchEvent(new Event('momentumx-view-as-agent-changed'));
+    navigate('/admin/agents');
   }
 
   function switchMode() {
@@ -419,7 +460,9 @@ export default function AppShell({ admin = false }) {
       >
         <div>
           <div className="brand">Momentum X</div>
-          <div className="brand-sub">{admin ? 'Admin Control' : 'Agent Ops'}</div>
+          <div className="brand-sub">
+            {isViewingAsAgent ? 'Viewing Agent' : admin ? 'Admin Control' : 'Agent Ops'}
+          </div>
         </div>
 
         <nav
@@ -452,21 +495,18 @@ export default function AppShell({ admin = false }) {
           })}
         </nav>
 
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
-            flexShrink: 0
-          }}
-        >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
           {isLockedAgent ? (
             <div className="glass" style={{ padding: 10, fontSize: 13, opacity: 0.85 }}>
               Complete the course to unlock Momentum X.
             </div>
           ) : null}
 
-          {admin ? (
+          {isViewingAsAgent ? (
+            <button className="btn btn-danger" onClick={exitViewAs} type="button">
+              Exit View As
+            </button>
+          ) : admin ? (
             <button className="btn btn-primary" onClick={switchMode} type="button">
               Switch to Agent
             </button>
@@ -494,16 +534,40 @@ export default function AppShell({ admin = false }) {
           flexDirection: 'column'
         }}
       >
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            overflow: 'hidden',
-            display: 'flex',
-            flexDirection: 'column'
-          }}
-        >
-          <Outlet />
+        {isViewingAsAgent ? (
+          <div
+            style={{
+              flexShrink: 0,
+              padding: '10px 16px',
+              background: 'rgba(251,191,36,0.14)',
+              borderBottom: '1px solid rgba(251,191,36,0.25)',
+              color: '#fbbf24',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              fontWeight: 800
+            }}
+          >
+            <span>
+              Viewing as:{' '}
+              {viewAsAgent.display_name || viewAsAgent.email || viewAsAgent.id}
+            </span>
+
+            <button className="btn btn-ghost btn-small" onClick={exitViewAs} type="button">
+              Exit View As
+            </button>
+          </div>
+        ) : null}
+
+        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <Outlet
+            context={{
+              viewAsAgent: isViewingAsAgent ? viewAsAgent : null,
+              effectiveAgentId,
+              adminProfile: profile
+            }}
+          />
         </div>
       </main>
     </div>
