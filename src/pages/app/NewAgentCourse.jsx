@@ -97,7 +97,6 @@ function loadYouTubeApi() {
     }
 
     const existing = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
-
     const previousReady = window.onYouTubeIframeAPIReady;
 
     window.onYouTubeIframeAPIReady = () => {
@@ -129,6 +128,7 @@ export default function NewAgentCourse() {
 
   const [sessionUserId, setSessionUserId] = useState('');
   const [status, setStatus] = useState(null);
+  const [profile, setProfile] = useState(null);
   const [progressRows, setProgressRows] = useState([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [message, setMessage] = useState('');
@@ -180,6 +180,16 @@ export default function NewAgentCourse() {
     if (!session) return;
 
     setSessionUserId(session.user.id);
+
+    const { data: profileData, error: profileError } = await supabase
+      .from('profiles')
+      .select('course_override_complete')
+      .eq('id', session.user.id)
+      .single();
+
+    if (profileError) throw profileError;
+
+    setProfile(profileData || null);
 
     const courseStatus = await ensureStatus(session.user.id);
 
@@ -236,7 +246,8 @@ export default function NewAgentCourse() {
   const videosCompleted = completedIndexes.size;
   const percentComplete = Math.round((videosCompleted / COURSE_VIDEOS.length) * 100);
   const allVideosComplete = videosCompleted >= COURSE_VIDEOS.length;
-  const isApproved = status?.status === 'approved';
+  const isCourseOverrideComplete = !!profile?.course_override_complete;
+  const isApproved = status?.status === 'approved' || isCourseOverrideComplete;
   const isPending = status?.status === 'pending_review';
 
   function isVideoUnlocked(index) {
@@ -480,7 +491,7 @@ export default function NewAgentCourse() {
 
   function handleSeek(value) {
     const requested = Number(value || 0);
-    const allowedMax = completedIndexes.has(activeIndex) ? duration : maxWatchedRef.current;
+    const allowedMax = completedIndexes.has(activeIndex) || isApproved ? duration : maxWatchedRef.current;
     const safeTime = Math.min(requested, allowedMax);
 
     playerRef.current?.seekTo?.(safeTime, true);
@@ -586,19 +597,23 @@ export default function NewAgentCourse() {
       <div className="grid grid-4">
         <div className="glass" style={{ padding: 14 }}>
           <div style={{ fontSize: 13, opacity: 0.75 }}>Status</div>
-          <div style={{ fontSize: 24, fontWeight: 800 }}>{getStatusLabel(status?.status)}</div>
+          <div style={{ fontSize: 24, fontWeight: 800 }}>
+            {isCourseOverrideComplete ? 'Approved' : getStatusLabel(status?.status)}
+          </div>
         </div>
 
         <div className="glass" style={{ padding: 14 }}>
           <div style={{ fontSize: 13, opacity: 0.75 }}>Videos Complete</div>
           <div style={{ fontSize: 24, fontWeight: 800 }}>
-            {videosCompleted}/{COURSE_VIDEOS.length}
+            {isApproved ? `${COURSE_VIDEOS.length}/${COURSE_VIDEOS.length}` : `${videosCompleted}/${COURSE_VIDEOS.length}`}
           </div>
         </div>
 
         <div className="glass" style={{ padding: 14 }}>
           <div style={{ fontSize: 13, opacity: 0.75 }}>Progress</div>
-          <div style={{ fontSize: 24, fontWeight: 800 }}>{percentComplete}%</div>
+          <div style={{ fontSize: 24, fontWeight: 800 }}>
+            {isApproved ? '100%' : `${percentComplete}%`}
+          </div>
         </div>
 
         <div className="glass" style={{ padding: 14 }}>
@@ -607,7 +622,7 @@ export default function NewAgentCourse() {
         </div>
       </div>
 
-      {status?.status === 'returned' ? (
+      {status?.status === 'returned' && !isCourseOverrideComplete ? (
         <div className="glass top-gap" style={{ padding: 16, border: '1px solid rgba(239,68,68,0.25)' }}>
           <h3 style={{ marginTop: 0 }}>Returned by Admin</h3>
           <p style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>
@@ -616,7 +631,7 @@ export default function NewAgentCourse() {
         </div>
       ) : null}
 
-      {isPending ? (
+      {isPending && !isCourseOverrideComplete ? (
         <div className="glass top-gap" style={{ padding: 16 }}>
           <h3 style={{ marginTop: 0 }}>Pending Review</h3>
           <p style={{ marginBottom: 0 }}>
@@ -648,7 +663,7 @@ export default function NewAgentCourse() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {COURSE_VIDEOS.map((video, index) => {
-              const completed = completedIndexes.has(index);
+              const completed = completedIndexes.has(index) || isApproved;
               const unlocked = isVideoUnlocked(index);
               const active = activeIndex === index;
 
@@ -751,72 +766,82 @@ export default function NewAgentCourse() {
                   marginTop: 6
                 }}
               >
-                <span>Watched: {formatTime(maxWatched)}</span>
+                <span>Watched: {isApproved ? formatTime(duration) : formatTime(maxWatched)}</span>
                 <span>
-                  {completedIndexes.has(activeIndex)
+                  {completedIndexes.has(activeIndex) || isApproved
                     ? 'Completed'
                     : `Forward locked at ${formatTime(maxWatched)}`}
                 </span>
               </div>
 
               <div style={{ marginTop: 12, fontSize: 13, opacity: 0.75 }}>
-                You can go back anytime. You can only go forward up to the farthest point you have watched.
-                This video completes automatically when it ends.
+                {isApproved
+                  ? 'Course access is unlocked. You can rewatch any video anytime.'
+                  : 'You can go back anytime. You can only go forward up to the farthest point you have watched. This video completes automatically when it ends.'}
               </div>
             </>
           ) : (
             <>
               <h2 style={{ marginTop: 0 }}>Final Voice Recording</h2>
-              <p style={{ opacity: 0.75 }}>
-                Record your final voice assignment. After you submit, an admin must approve it before your full access unlocks.
-              </p>
 
-              <div className="glass" style={{ padding: 14, border: '1px solid rgba(255,255,255,0.08)' }}>
-                <h3 style={{ marginTop: 0 }}>What to include</h3>
-                <ul style={{ marginBottom: 0 }}>
-                  <li>Who you are and why you joined Momentum X.</li>
-                  <li>What you learned from the course.</li>
-                  <li>How you are going to approach leads, calls, Zoom, and follow-up.</li>
-                  <li>That you understand chargebacks and expectations.</li>
-                </ul>
-              </div>
+              {isApproved ? (
+                <p style={{ opacity: 0.75 }}>
+                  Your course is already approved. You do not need to submit a final recording.
+                </p>
+              ) : (
+                <>
+                  <p style={{ opacity: 0.75 }}>
+                    Record your final voice assignment. After you submit, an admin must approve it before your full access unlocks.
+                  </p>
 
-              {recordingUrl ? (
-                <div className="top-gap">
-                  <audio controls src={recordingUrl} style={{ width: '100%' }} />
-                </div>
-              ) : null}
+                  <div className="glass" style={{ padding: 14, border: '1px solid rgba(255,255,255,0.08)' }}>
+                    <h3 style={{ marginTop: 0 }}>What to include</h3>
+                    <ul style={{ marginBottom: 0 }}>
+                      <li>Who you are and why you joined Momentum X.</li>
+                      <li>What you learned from the course.</li>
+                      <li>How you are going to approach leads, calls, Zoom, and follow-up.</li>
+                      <li>That you understand chargebacks and expectations.</li>
+                    </ul>
+                  </div>
 
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
-                {!recording ? (
-                  <button className="btn btn-primary" type="button" onClick={startRecording}>
-                    Start Recording
+                  {recordingUrl ? (
+                    <div className="top-gap">
+                      <audio controls src={recordingUrl} style={{ width: '100%' }} />
+                    </div>
+                  ) : null}
+
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
+                    {!recording ? (
+                      <button className="btn btn-primary" type="button" onClick={startRecording}>
+                        Start Recording
+                      </button>
+                    ) : (
+                      <button className="btn btn-danger" type="button" onClick={stopRecording}>
+                        Stop Recording
+                      </button>
+                    )}
+                  </div>
+
+                  <label className="top-gap" style={{ display: 'block' }}>
+                    Optional Note
+                    <textarea
+                      rows={4}
+                      value={finalNote}
+                      onChange={(e) => setFinalNote(e.target.value)}
+                      placeholder="If you sent the voice recording to Logan instead, write that here..."
+                    />
+                  </label>
+
+                  <button
+                    className="btn btn-primary top-gap"
+                    type="button"
+                    onClick={submitFinalReview}
+                    disabled={submittingFinal || isPending}
+                  >
+                    {isPending ? 'Already Submitted' : submittingFinal ? 'Submitting...' : 'Submit for Review'}
                   </button>
-                ) : (
-                  <button className="btn btn-danger" type="button" onClick={stopRecording}>
-                    Stop Recording
-                  </button>
-                )}
-              </div>
-
-              <label className="top-gap" style={{ display: 'block' }}>
-                Optional Note
-                <textarea
-                  rows={4}
-                  value={finalNote}
-                  onChange={(e) => setFinalNote(e.target.value)}
-                  placeholder="If you sent the voice recording to Logan instead, write that here..."
-                />
-              </label>
-
-              <button
-                className="btn btn-primary top-gap"
-                type="button"
-                onClick={submitFinalReview}
-                disabled={submittingFinal || isPending}
-              >
-                {isPending ? 'Already Submitted' : submittingFinal ? 'Submitting...' : 'Submit for Review'}
-              </button>
+                </>
+              )}
             </>
           )}
         </div>
