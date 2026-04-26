@@ -4,7 +4,7 @@ import DataTable from '../../components/DataTable';
 import { writeAdminLog } from '../../lib/adminLog';
 
 const leadTypes = ['Veteran', 'Trucker IUL', 'Mortgage', 'General IUL'];
-const PROGRAM_DAYS = 90;
+const PROGRAM_DAYS = 70;
 
 function formatDate(value) {
   if (!value) return '—';
@@ -29,6 +29,7 @@ function getDaysLeft(row) {
   const now = new Date();
   const elapsedMs = now.getTime() - start.getTime();
   const elapsedDays = Math.floor(elapsedMs / (1000 * 60 * 60 * 24));
+
   return Math.max(0, PROGRAM_DAYS - elapsedDays);
 }
 
@@ -116,7 +117,7 @@ export default function Agents() {
     updateProfile(
       row.id,
       patch,
-      nextActive ? 'Activated 90-day lead program' : 'Deactivated 90-day lead program'
+      nextActive ? 'Activated 10-week lead program' : 'Deactivated 10-week lead program'
     );
   }
 
@@ -127,7 +128,17 @@ export default function Agents() {
         lead_program_active: true,
         lead_program_started_at: new Date().toISOString()
       },
-      'Restarted 90-day lead program'
+      'Restarted 10-week lead program'
+    );
+  }
+
+  function toggleCourseOverride(row) {
+    const nextValue = !row.course_override_complete;
+
+    updateProfile(
+      row.id,
+      { course_override_complete: nextValue },
+      nextValue ? 'Overrode course completion' : 'Removed course override'
     );
   }
 
@@ -138,6 +149,7 @@ export default function Agents() {
         row.email,
         row.discord_username,
         getProgramStatus(row),
+        row.course_override_complete ? 'course complete override' : 'course required',
         Array.isArray(row.allowed_lead_types) ? row.allowed_lead_types.join(' ') : ''
       ]
         .filter(Boolean)
@@ -156,6 +168,8 @@ export default function Agents() {
         if (statusFilter === 'expired') return status === 'expired';
         if (statusFilter === 'paused') return status === 'paused';
         if (statusFilter === 'ineligible') return status === 'ineligible';
+        if (statusFilter === 'course_complete') return !!row.course_override_complete;
+        if (statusFilter === 'course_required') return !row.course_override_complete;
 
         return true;
       });
@@ -245,6 +259,25 @@ export default function Agents() {
       )
     },
     {
+      key: 'course_override_complete',
+      label: 'Course',
+      render: (value, row) => (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <button
+            className={value ? 'btn btn-primary btn-small' : 'btn btn-ghost btn-small'}
+            onClick={() => toggleCourseOverride(row)}
+            type="button"
+          >
+            {value ? 'Complete' : 'Override Course'}
+          </button>
+
+          <div style={{ fontSize: 12, opacity: 0.75 }}>
+            {value ? 'Course overridden' : 'Course required'}
+          </div>
+        </div>
+      )
+    },
+    {
       key: 'leads_paused',
       label: 'Paused',
       render: (value, row) => (
@@ -283,7 +316,7 @@ export default function Agents() {
           onClick={() => restartProgram(row)}
           type="button"
         >
-          Restart 90 Days
+          Restart 10 Weeks
         </button>
       )
     }
@@ -303,7 +336,7 @@ export default function Agents() {
       <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
           <h1>Agents</h1>
-          <p>Manage 90-day lead program access, lead types, pauses, and eligibility.</p>
+          <p>Manage 10-week lead program access, lead types, pauses, eligibility, and course overrides.</p>
         </div>
       </div>
 
@@ -320,7 +353,7 @@ export default function Agents() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Agent name, email, status, or lead type..."
+              placeholder="Agent name, email, status, lead type, or course..."
             />
           </label>
 
@@ -333,6 +366,8 @@ export default function Agents() {
               <option value="expired">Expired</option>
               <option value="paused">Paused</option>
               <option value="ineligible">Ineligible</option>
+              <option value="course_complete">Course Complete</option>
+              <option value="course_required">Course Required</option>
             </select>
           </label>
 
