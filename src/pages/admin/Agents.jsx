@@ -105,6 +105,13 @@ export default function Agents() {
       display_name: row.display_name || '',
       email: row.email || '',
       discord_username: row.discord_username || '',
+      is_admin: !!row.is_admin,
+      course_override_complete: !!row.course_override_complete,
+      lead_program_active: !!row.lead_program_active,
+      lead_program_started_at: row.lead_program_started_at || null,
+      leads_paused: !!row.leads_paused,
+      lead_access_banned: !!row.lead_access_banned,
+      allowed_lead_types: Array.isArray(row.allowed_lead_types) ? row.allowed_lead_types : [],
       started_at: new Date().toISOString()
     };
 
