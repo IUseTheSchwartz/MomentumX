@@ -80,12 +80,13 @@ export default function AppShell({ admin = false }) {
 
   const [session, setSession] = useState(undefined);
   const [profile, setProfile] = useState(null);
+  const [viewAsAgent, setViewAsAgent] = useState(() => getStoredViewAsAgent());
+  const [viewAsProfile, setViewAsProfile] = useState(null);
   const [courseStatus, setCourseStatus] = useState(null);
   const [navCounts, setNavCounts] = useState({
     replacementRequests: 0,
     support: 0
   });
-  const [viewAsAgent, setViewAsAgent] = useState(() => getStoredViewAsAgent());
 
   const mountedRef = useRef(true);
   const lastProfileRef = useRef(null);
@@ -94,10 +95,35 @@ export default function AppShell({ admin = false }) {
 
   const isViewingAsAgent = Boolean(viewAsAgent?.id && profile?.is_admin);
   const effectiveAgentId = isViewingAsAgent ? viewAsAgent.id : session?.user?.id || null;
+  const effectiveProfile = isViewingAsAgent ? viewAsProfile || viewAsAgent : profile;
 
-  const courseApproved = isViewingAsAgent || courseStatus?.status === 'approved';
-  const isLockedAgent = !admin && !profile?.is_admin && !courseApproved;
+  const courseApproved =
+    courseStatus?.status === 'approved' || !!effectiveProfile?.course_override_complete;
+
+  const isLockedAgent = !admin && !courseApproved;
   const links = admin ? adminLinks : isLockedAgent ? lockedAgentLinks : fullAgentLinks;
+
+  async function loadViewAsProfile(agentId) {
+    if (!agentId) {
+      setViewAsProfile(null);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', agentId)
+      .maybeSingle();
+
+    if (!mountedRef.current) return;
+
+    if (error) {
+      setViewAsProfile(viewAsAgent || null);
+      return;
+    }
+
+    setViewAsProfile(data || viewAsAgent || null);
+  }
 
   async function loadCourseStatus(userId) {
     if (!userId) {
@@ -219,6 +245,15 @@ export default function AppShell({ admin = false }) {
   }, []);
 
   useEffect(() => {
+    if (!isViewingAsAgent || !viewAsAgent?.id) {
+      setViewAsProfile(null);
+      return;
+    }
+
+    loadViewAsProfile(viewAsAgent.id);
+  }, [isViewingAsAgent, viewAsAgent?.id]);
+
+  useEffect(() => {
     mountedRef.current = true;
 
     async function loadProfileForSession(nextSession, { keepPreviousOnFailure = true } = {}) {
@@ -322,6 +357,7 @@ export default function AppShell({ admin = false }) {
         });
         window.localStorage.removeItem(VIEW_AS_AGENT_STORAGE_KEY);
         setViewAsAgent(null);
+        setViewAsProfile(null);
         return;
       }
 
@@ -358,6 +394,10 @@ export default function AppShell({ admin = false }) {
     const intervalId = window.setInterval(() => {
       loadNavCountsForUser(session.user.id, admin);
       loadCourseStatus(effectiveAgentId || session.user.id);
+
+      if (isViewingAsAgent && viewAsAgent?.id) {
+        loadViewAsProfile(viewAsAgent.id);
+      }
     }, REFRESH_INTERVAL_MS);
 
     const channel = supabase
@@ -387,17 +427,27 @@ export default function AppShell({ admin = false }) {
         { event: '*', schema: 'public', table: 'agent_course_status' },
         () => loadCourseStatus(effectiveAgentId || session.user.id)
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles' },
+        () => {
+          if (isViewingAsAgent && viewAsAgent?.id) {
+            loadViewAsProfile(viewAsAgent.id);
+          }
+        }
+      )
       .subscribe();
 
     return () => {
       window.clearInterval(intervalId);
       supabase.removeChannel(channel);
     };
-  }, [session?.user?.id, admin, effectiveAgentId]);
+  }, [session?.user?.id, admin, effectiveAgentId, isViewingAsAgent, viewAsAgent?.id]);
 
   async function signOut() {
     window.localStorage.removeItem(VIEW_AS_AGENT_STORAGE_KEY);
     setViewAsAgent(null);
+    setViewAsProfile(null);
     await supabase.auth.signOut();
     navigate('/', { replace: true });
   }
@@ -405,6 +455,7 @@ export default function AppShell({ admin = false }) {
   function exitViewAs() {
     window.localStorage.removeItem(VIEW_AS_AGENT_STORAGE_KEY);
     setViewAsAgent(null);
+    setViewAsProfile(null);
     window.dispatchEvent(new Event('momentumx-view-as-agent-changed'));
     navigate('/admin/agents');
   }
@@ -551,7 +602,10 @@ export default function AppShell({ admin = false }) {
           >
             <span>
               Viewing as:{' '}
-              {viewAsAgent.display_name || viewAsAgent.email || viewAsAgent.id}
+              {effectiveProfile?.display_name ||
+                effectiveProfile?.email ||
+                effectiveProfile?.id ||
+                viewAsAgent.id}
             </span>
 
             <button className="btn btn-ghost btn-small" onClick={exitViewAs} type="button">
@@ -560,12 +614,21 @@ export default function AppShell({ admin = false }) {
           </div>
         ) : null}
 
-        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column'
+          }}
+        >
           <Outlet
             context={{
-              viewAsAgent: isViewingAsAgent ? viewAsAgent : null,
+              viewAsAgent: isViewingAsAgent ? effectiveProfile : null,
               effectiveAgentId,
-              adminProfile: profile
+              adminProfile: profile,
+              isViewingAsAgent
             }}
           />
         </div>
