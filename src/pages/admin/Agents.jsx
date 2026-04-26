@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabaseClient';
 import DataTable from '../../components/DataTable';
 import { writeAdminLog } from '../../lib/adminLog';
+import { VIEW_AS_AGENT_STORAGE_KEY } from '../../components/AppShell';
 
 const leadTypes = ['Veteran', 'Trucker IUL', 'Mortgage', 'General IUL'];
 const PROGRAM_DAYS = 70;
@@ -45,6 +47,8 @@ function getProgramStatus(row) {
 }
 
 export default function Agents() {
+  const navigate = useNavigate();
+
   const [rows, setRows] = useState([]);
   const [message, setMessage] = useState('');
   const [search, setSearch] = useState('');
@@ -93,6 +97,30 @@ export default function Agents() {
 
     setMessage('Agent updated.');
     load();
+  }
+
+  async function viewAsAgent(row) {
+    const payload = {
+      id: row.id,
+      display_name: row.display_name || '',
+      email: row.email || '',
+      discord_username: row.discord_username || '',
+      started_at: new Date().toISOString()
+    };
+
+    window.localStorage.setItem(VIEW_AS_AGENT_STORAGE_KEY, JSON.stringify(payload));
+    window.dispatchEvent(new Event('momentumx-view-as-agent-changed'));
+
+    await writeAdminLog({
+      action: 'Started view as agent',
+      targetType: 'profile',
+      targetId: row.id,
+      details: {
+        agent: payload
+      }
+    });
+
+    navigate('/app/dashboard');
   }
 
   function toggleLeadType(row, type) {
@@ -283,9 +311,7 @@ export default function Agents() {
       render: (value, row) => (
         <button
           className="btn btn-ghost btn-small"
-          onClick={() =>
-            updateProfile(row.id, { leads_paused: !value }, 'Toggled leads paused')
-          }
+          onClick={() => updateProfile(row.id, { leads_paused: !value }, 'Toggled leads paused')}
           type="button"
         >
           {value ? 'Yes' : 'No'}
@@ -311,13 +337,23 @@ export default function Agents() {
       key: 'actions',
       label: 'Actions',
       render: (_value, row) => (
-        <button
-          className="btn btn-ghost btn-small"
-          onClick={() => restartProgram(row)}
-          type="button"
-        >
-          Restart 10 Weeks
-        </button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <button
+            className="btn btn-primary btn-small"
+            onClick={() => viewAsAgent(row)}
+            type="button"
+          >
+            View As
+          </button>
+
+          <button
+            className="btn btn-ghost btn-small"
+            onClick={() => restartProgram(row)}
+            type="button"
+          >
+            Restart 10 Weeks
+          </button>
+        </div>
       )
     }
   ];
@@ -336,7 +372,10 @@ export default function Agents() {
       <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
           <h1>Agents</h1>
-          <p>Manage 10-week lead program access, lead types, pauses, eligibility, and course overrides.</p>
+          <p>
+            Manage 10-week lead program access, lead types, pauses, eligibility, course overrides,
+            and view the platform as an agent.
+          </p>
         </div>
       </div>
 
