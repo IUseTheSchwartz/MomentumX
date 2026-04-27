@@ -10,6 +10,7 @@ import Ineligible from './pages/Ineligible';
 
 import Dashboard from './pages/app/Dashboard';
 import Leads from './pages/app/Leads';
+import AISalesTrainer from './pages/app/AISalesTrainer';
 import KPI from './pages/app/KPI';
 import Recordings from './pages/app/Recordings';
 import Scripts from './pages/app/Scripts';
@@ -46,6 +47,7 @@ export default function App() {
         <Route path="course" element={<NewAgentCourse />} />
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="leads" element={<Leads />} />
+        <Route path="ai-trainer" element={<AISalesTrainer />} />
         <Route path="kpi" element={<KPI />} />
         <Route path="recordings" element={<Recordings />} />
         <Route path="scripts" element={<Scripts />} />
