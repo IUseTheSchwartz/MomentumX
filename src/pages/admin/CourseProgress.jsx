@@ -33,7 +33,8 @@ function formatDate(value) {
 }
 
 export default function CourseProgress() {
-  const [rows, setRows] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [statuses, setStatuses] = useState([]);
   const [progressRows, setProgressRows] = useState([]);
   const [message, setMessage] = useState('');
   const [search, setSearch] = useState('');
@@ -42,70 +43,89 @@ export default function CourseProgress() {
   const [returnNote, setReturnNote] = useState('');
   const [selectedVideos, setSelectedVideos] = useState(new Set());
 
-  async function ensureStatusesForAgents(profileRows, existingStatuses) {
-    const existingAgentIds = new Set((existingStatuses || []).map((row) => row.agent_id));
-    const missingProfiles = (profileRows || []).filter((profile) => !existingAgentIds.has(profile.id));
-
-    if (!missingProfiles.length) return;
-
-    const inserts = missingProfiles.map((profile) => ({
-      agent_id: profile.id,
-      status: 'not_started',
-      current_step: 0
-    }));
-
-    await supabase.from('agent_course_status').insert(inserts);
-  }
-
   async function load() {
     setMessage('');
 
-    const [{ data: profileRows, error: profileError }, { data: statusRows, error: statusError }] =
-      await Promise.all([
-        supabase
-          .from('profiles')
-          .select('id, display_name, email, is_admin, created_at')
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('agent_course_status')
-          .select('*')
-          .order('updated_at', { ascending: false })
-      ]);
+    const { data: profileRows, error: profileError } = await supabase
+      .from('profiles')
+      .select('id, display_name, email, is_admin, created_at, course_override_complete')
+      .eq('is_admin', false)
+      .order('created_at', { ascending: false });
 
     if (profileError) {
       setMessage(profileError.message || 'Could not load agents.');
       return;
     }
 
+    const agentIds = (profileRows || []).map((agent) => agent.id);
+
+    if (!agentIds.length) {
+      setAgents([]);
+      setStatuses([]);
+      setProgressRows([]);
+      return;
+    }
+
+    const { data: existingStatuses, error: statusError } = await supabase
+      .from('agent_course_status')
+      .select('*')
+      .in('agent_id', agentIds);
+
     if (statusError) {
       setMessage(statusError.message || 'Could not load course statuses.');
       return;
     }
 
-    await ensureStatusesForAgents(profileRows || [], statusRows || []);
+    const existingStatusIds = new Set((existingStatuses || []).map((row) => row.agent_id));
+    const missingAgents = (profileRows || []).filter((agent) => !existingStatusIds.has(agent.id));
 
-    const [{ data: refreshedStatuses }, { data: videoProgress }] = await Promise.all([
-      supabase.from('agent_course_status').select('*').order('updated_at', { ascending: false }),
-      supabase.from('agent_course_video_progress').select('*')
-    ]);
+    if (missingAgents.length) {
+      const inserts = missingAgents.map((agent) => ({
+        agent_id: agent.id,
+        status: 'not_started',
+        current_step: 0
+      }));
 
-    const profilesById = {};
-    for (const profile of profileRows || []) {
-      profilesById[profile.id] = profile;
+      const { error: insertError } = await supabase.from('agent_course_status').insert(inserts);
+
+      if (insertError) {
+        setMessage(insertError.message || 'Could not create missing course statuses.');
+        return;
+      }
     }
 
-    const merged = (refreshedStatuses || []).map((status) => ({
-      ...status,
-      profile: profilesById[status.agent_id] || null
-    }));
+    const [{ data: freshStatuses, error: freshStatusError }, { data: freshProgress, error: progressError }] =
+      await Promise.all([
+        supabase.from('agent_course_status').select('*').in('agent_id', agentIds),
+        supabase.from('agent_course_video_progress').select('*').in('agent_id', agentIds)
+      ]);
 
-    setRows(merged);
-    setProgressRows(videoProgress || []);
+    if (freshStatusError) {
+      setMessage(freshStatusError.message || 'Could not refresh statuses.');
+      return;
+    }
+
+    if (progressError) {
+      setMessage(progressError.message || 'Could not load video progress.');
+      return;
+    }
+
+    setAgents(profileRows || []);
+    setStatuses(freshStatuses || []);
+    setProgressRows(freshProgress || []);
   }
 
   useEffect(() => {
     load();
   }, []);
+
+  const statusByAgent = useMemo(() => {
+    const map = {};
+    for (const row of statuses || []) {
+      map[row.agent_id] = row;
+    }
+    return map;
+  }, [statuses]);
 
   const progressByAgent = useMemo(() => {
     const map = {};
@@ -118,19 +138,32 @@ export default function CourseProgress() {
     return map;
   }, [progressRows]);
 
-  const completedByAgent = useMemo(() => {
-    const map = {};
+  const tableRows = useMemo(() => {
+    return (agents || []).map((agent) => {
+      const status = statusByAgent[agent.id] || {
+        agent_id: agent.id,
+        status: 'not_started',
+        current_step: 0
+      };
 
-    for (const row of progressRows || []) {
-      if (!row.completed) continue;
-      map[row.agent_id] = Number(map[row.agent_id] || 0) + 1;
-    }
+      const progressMap = progressByAgent[agent.id] || {};
+      const completedCount = COURSE_VIDEOS.reduce((count, _video, index) => {
+        return count + (progressMap[index]?.completed ? 1 : 0);
+      }, 0);
 
-    return map;
-  }, [progressRows]);
+      return {
+        ...status,
+        agent_id: agent.id,
+        profile: agent,
+        completedCount,
+        progressMap,
+        status: agent.course_override_complete ? 'approved' : status.status || 'not_started'
+      };
+    });
+  }, [agents, statusByAgent, progressByAgent]);
 
   const filteredRows = useMemo(() => {
-    return rows.filter((row) => {
+    return tableRows.filter((row) => {
       const profile = row.profile || {};
       const text = [
         profile.display_name,
@@ -148,14 +181,13 @@ export default function CourseProgress() {
 
       return true;
     });
-  }, [rows, search, statusFilter]);
+  }, [tableRows, search, statusFilter]);
 
   function openReview(row) {
-    const existingProgress = progressByAgent[row.agent_id] || {};
     const nextSelected = new Set();
 
-    COURSE_VIDEOS.forEach((_title, index) => {
-      if (existingProgress[index]?.completed) {
+    COURSE_VIDEOS.forEach((_video, index) => {
+      if (row.progressMap?.[index]?.completed) {
         nextSelected.add(index);
       }
     });
@@ -168,23 +200,95 @@ export default function CourseProgress() {
   function toggleVideo(index) {
     setSelectedVideos((current) => {
       const next = new Set(current);
-      if (next.has(index)) {
-        next.delete(index);
-      } else {
-        next.add(index);
-      }
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
       return next;
     });
   }
 
   function selectFirstVideos(count) {
     const next = new Set();
+    for (let i = 0; i < count; i += 1) next.add(i);
+    setSelectedVideos(next);
+  }
 
-    for (let i = 0; i < count; i += 1) {
-      next.add(i);
+  async function saveVideoOverrides(row) {
+    const now = new Date().toISOString();
+    const selectedIndexes = Array.from(selectedVideos).sort((a, b) => a - b);
+    const currentProgress = progressByAgent[row.agent_id] || {};
+
+    const upserts = COURSE_VIDEOS.map((_video, index) => {
+      const shouldComplete = selectedVideos.has(index);
+      const oldRow = currentProgress[index];
+
+      return {
+        agent_id: row.agent_id,
+        video_index: index,
+        completed: shouldComplete,
+        watched_seconds: shouldComplete
+          ? Math.max(Number(oldRow?.watched_seconds || 0), 9999)
+          : Number(oldRow?.watched_seconds || 0),
+        completed_at: shouldComplete ? oldRow?.completed_at || now : null,
+        updated_at: now
+      };
+    });
+
+    const { error: progressError } = await supabase
+      .from('agent_course_video_progress')
+      .upsert(upserts, { onConflict: 'agent_id,video_index' });
+
+    if (progressError) {
+      setMessage(progressError.message || 'Could not save video overrides.');
+      return;
     }
 
-    setSelectedVideos(next);
+    let currentStep = 0;
+    for (let i = 0; i < COURSE_VIDEO_COUNT; i += 1) {
+      if (selectedVideos.has(i)) currentStep = i + 1;
+      else break;
+    }
+
+    const nextStatus =
+      row.status === 'approved'
+        ? 'approved'
+        : currentStep >= COURSE_VIDEO_COUNT
+          ? 'in_progress'
+          : currentStep > 0
+            ? 'in_progress'
+            : 'not_started';
+
+    const { error: statusError } = await supabase
+      .from('agent_course_status')
+      .upsert(
+        {
+          agent_id: row.agent_id,
+          current_step: currentStep,
+          status: nextStatus,
+          updated_at: now
+        },
+        { onConflict: 'agent_id' }
+      );
+
+    if (statusError) {
+      setMessage(statusError.message || 'Could not update course status.');
+      return;
+    }
+
+    await writeAdminLog({
+      action: 'Updated course video overrides',
+      targetType: 'agent_course_status',
+      targetId: row.id || row.agent_id,
+      details: {
+        agent_id: row.agent_id,
+        agent: row.profile?.display_name || row.profile?.email || null,
+        completed_video_numbers: selectedIndexes.map((index) => index + 1),
+        current_step: currentStep
+      }
+    });
+
+    setSelectedRow(null);
+    setMessage('Video overrides saved.');
+    await load();
   }
 
   async function approve(row) {
@@ -192,17 +296,22 @@ export default function CourseProgress() {
       data: { session }
     } = await supabase.auth.getSession();
 
+    const now = new Date().toISOString();
+
     const { error } = await supabase
       .from('agent_course_status')
-      .update({
-        status: 'approved',
-        current_step: COURSE_VIDEO_COUNT,
-        approved_at: new Date().toISOString(),
-        approved_by: session?.user?.id || null,
-        returned_note: null,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', row.id);
+      .upsert(
+        {
+          agent_id: row.agent_id,
+          status: 'approved',
+          current_step: COURSE_VIDEO_COUNT,
+          approved_at: now,
+          approved_by: session?.user?.id || null,
+          returned_note: null,
+          updated_at: now
+        },
+        { onConflict: 'agent_id' }
+      );
 
     if (error) {
       setMessage(error.message || 'Could not approve.');
@@ -212,7 +321,7 @@ export default function CourseProgress() {
     await writeAdminLog({
       action: 'Approved new agent course',
       targetType: 'agent_course_status',
-      targetId: row.id,
+      targetId: row.id || row.agent_id,
       details: {
         agent_id: row.agent_id,
         agent: row.profile?.display_name || row.profile?.email || null
@@ -232,12 +341,15 @@ export default function CourseProgress() {
 
     const { error } = await supabase
       .from('agent_course_status')
-      .update({
-        status: 'returned',
-        returned_note: returnNote.trim(),
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', row.id);
+      .upsert(
+        {
+          agent_id: row.agent_id,
+          status: 'returned',
+          returned_note: returnNote.trim(),
+          updated_at: new Date().toISOString()
+        },
+        { onConflict: 'agent_id' }
+      );
 
     if (error) {
       setMessage(error.message || 'Could not return course.');
@@ -247,7 +359,7 @@ export default function CourseProgress() {
     await writeAdminLog({
       action: 'Returned new agent course',
       targetType: 'agent_course_status',
-      targetId: row.id,
+      targetId: row.id || row.agent_id,
       details: {
         agent_id: row.agent_id,
         note: returnNote.trim()
@@ -260,104 +372,13 @@ export default function CourseProgress() {
     await load();
   }
 
-  async function saveVideoOverrides(row) {
-    const now = new Date().toISOString();
-    const selectedIndexes = Array.from(selectedVideos).sort((a, b) => a - b);
-
-    const existingProgress = progressByAgent[row.agent_id] || {};
-    const existingCompletedIndexes = Object.entries(existingProgress)
-      .filter(([, progress]) => progress?.completed)
-      .map(([index]) => Number(index));
-
-    const indexesToMarkComplete = selectedIndexes;
-    const indexesToMarkIncomplete = existingCompletedIndexes.filter((index) => !selectedVideos.has(index));
-
-    if (indexesToMarkComplete.length) {
-      const updates = indexesToMarkComplete.map((index) => ({
-        agent_id: row.agent_id,
-        video_index: index,
-        completed: true,
-        watched_seconds: Math.max(Number(existingProgress[index]?.watched_seconds || 0), 9999),
-        completed_at: existingProgress[index]?.completed_at || now,
-        updated_at: now
-      }));
-
-      const { error } = await supabase.from('agent_course_video_progress').upsert(updates, {
-        onConflict: 'agent_id,video_index'
-      });
-
-      if (error) {
-        setMessage(error.message || 'Could not save completed videos.');
-        return;
-      }
-    }
-
-    for (const index of indexesToMarkIncomplete) {
-      const { error } = await supabase
-        .from('agent_course_video_progress')
-        .update({
-          completed: false,
-          completed_at: null,
-          updated_at: now
-        })
-        .eq('agent_id', row.agent_id)
-        .eq('video_index', index);
-
-      if (error) {
-        setMessage(error.message || 'Could not update removed videos.');
-        return;
-      }
-    }
-
-    let currentStep = 0;
-    for (let i = 0; i < COURSE_VIDEO_COUNT; i += 1) {
-      if (selectedVideos.has(i)) {
-        currentStep = i + 1;
-      } else {
-        break;
-      }
-    }
-
-    const { error: statusError } = await supabase
-      .from('agent_course_status')
-      .update({
-        current_step: currentStep,
-        status: row.status === 'approved' ? 'approved' : currentStep > 0 ? 'in_progress' : 'not_started',
-        updated_at: now
-      })
-      .eq('id', row.id);
-
-    if (statusError) {
-      setMessage(statusError.message || 'Could not update course step.');
-      return;
-    }
-
-    await writeAdminLog({
-      action: 'Updated course video overrides',
-      targetType: 'agent_course_status',
-      targetId: row.id,
-      details: {
-        agent_id: row.agent_id,
-        completed_video_indexes: selectedIndexes,
-        completed_video_numbers: selectedIndexes.map((index) => index + 1),
-        current_step: currentStep
-      }
-    });
-
-    setSelectedRow(null);
-    setMessage('Video overrides saved.');
-    await load();
-  }
-
   const columns = [
     {
       key: 'agent',
       label: 'Agent',
       render: (_value, row) => (
         <div>
-          <div style={{ fontWeight: 800 }}>
-            {row.profile?.display_name || 'Unnamed Agent'}
-          </div>
+          <div style={{ fontWeight: 800 }}>{row.profile?.display_name || 'Unnamed Agent'}</div>
           <div style={{ fontSize: 13, opacity: 0.75 }}>{row.profile?.email || 'No email'}</div>
         </div>
       )
@@ -371,10 +392,8 @@ export default function CourseProgress() {
       key: 'progress',
       label: 'Progress',
       render: (_value, row) => {
-        const completed = completedByAgent[row.agent_id] || 0;
-        const percent = Math.round((completed / COURSE_VIDEO_COUNT) * 100);
-
-        return `${completed}/${COURSE_VIDEO_COUNT} videos · ${percent}%`;
+        const percent = Math.round((Number(row.completedCount || 0) / COURSE_VIDEO_COUNT) * 100);
+        return `${row.completedCount}/${COURSE_VIDEO_COUNT} videos · ${percent}%`;
       }
     },
     {
@@ -391,11 +410,7 @@ export default function CourseProgress() {
       key: 'actions',
       label: 'Actions',
       render: (_value, row) => (
-        <button
-          className="btn btn-primary btn-small"
-          type="button"
-          onClick={() => openReview(row)}
-        >
+        <button className="btn btn-primary btn-small" type="button" onClick={() => openReview(row)}>
           Review
         </button>
       )
@@ -416,7 +431,7 @@ export default function CourseProgress() {
       <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
           <h1>Course Progress</h1>
-          <p>Track new agent course progress, approve final submissions, or override exact videos.</p>
+          <p>Track course progress from the new video progress table and override exact videos.</p>
         </div>
       </div>
 
@@ -453,14 +468,7 @@ export default function CourseProgress() {
         {message ? <div className="top-gap">{message}</div> : null}
       </div>
 
-      <div
-        className="top-gap"
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflow: 'auto'
-        }}
-      >
+      <div className="top-gap" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
         <DataTable columns={columns} rows={filteredRows} />
       </div>
 
@@ -501,7 +509,7 @@ export default function CourseProgress() {
               </div>
 
               <div className="glass" style={{ padding: 12 }}>
-                <div style={{ fontSize: 13, opacity: 0.75 }}>Videos</div>
+                <div style={{ fontSize: 13, opacity: 0.75 }}>Selected Complete</div>
                 <div style={{ fontSize: 20, fontWeight: 800 }}>
                   {selectedVideos.size}/{COURSE_VIDEO_COUNT}
                 </div>
@@ -517,23 +525,20 @@ export default function CourseProgress() {
 
             <div className="glass top-gap" style={{ padding: 14 }}>
               <h3 style={{ marginTop: 0 }}>Video Overrides</h3>
-              <p style={{ opacity: 0.75 }}>
-                Select the exact videos you want marked complete. Example: choose only video 1, or use “Complete 1–3”.
-              </p>
 
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
                 <button className="btn btn-ghost btn-small" type="button" onClick={() => setSelectedVideos(new Set())}>
                   Clear All
                 </button>
-
                 <button className="btn btn-ghost btn-small" type="button" onClick={() => selectFirstVideos(1)}>
                   Complete 1
                 </button>
-
                 <button className="btn btn-ghost btn-small" type="button" onClick={() => selectFirstVideos(3)}>
                   Complete 1–3
                 </button>
-
+                <button className="btn btn-ghost btn-small" type="button" onClick={() => selectFirstVideos(7)}>
+                  Complete 1–7
+                </button>
                 <button className="btn btn-ghost btn-small" type="button" onClick={() => selectFirstVideos(COURSE_VIDEO_COUNT)}>
                   Complete All Videos
                 </button>
@@ -542,7 +547,7 @@ export default function CourseProgress() {
               <div style={{ display: 'grid', gap: 8 }}>
                 {COURSE_VIDEOS.map((title, index) => {
                   const checked = selectedVideos.has(index);
-                  const progress = progressByAgent[selectedRow.agent_id]?.[index];
+                  const progress = selectedRow.progressMap?.[index];
 
                   return (
                     <label
@@ -570,7 +575,7 @@ export default function CourseProgress() {
                           {index + 1}. {title}
                         </div>
                         <div style={{ fontSize: 12, opacity: 0.7 }}>
-                          DB: {progress?.completed ? 'Complete' : 'Not complete'} · Watched:{' '}
+                          Stored: {progress?.completed ? 'Complete' : 'Not complete'} · Watched:{' '}
                           {Number(progress?.watched_seconds || 0)}s
                         </div>
                       </div>
@@ -583,11 +588,7 @@ export default function CourseProgress() {
                 })}
               </div>
 
-              <button
-                className="btn btn-primary top-gap"
-                type="button"
-                onClick={() => saveVideoOverrides(selectedRow)}
-              >
+              <button className="btn btn-primary top-gap" type="button" onClick={() => saveVideoOverrides(selectedRow)}>
                 Save Video Overrides
               </button>
             </div>
