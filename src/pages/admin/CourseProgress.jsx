@@ -3,7 +3,19 @@ import { supabase } from '../../lib/supabaseClient';
 import DataTable from '../../components/DataTable';
 import { writeAdminLog } from '../../lib/adminLog';
 
-const COURSE_VIDEO_COUNT = 9;
+const COURSE_VIDEOS = [
+  'Intro',
+  'Why People Fail',
+  'Anyone Can Do It',
+  'What Is an IUL and Where to Go',
+  'How to Get Paid + Day to Day as an Agent',
+  'Paid Leads',
+  'Cameras on Video',
+  'Chargebacks',
+  'Final Voice Note Instructions'
+];
+
+const COURSE_VIDEO_COUNT = COURSE_VIDEOS.length;
 
 function statusLabel(status) {
   if (status === 'approved') return 'Approved';
@@ -28,7 +40,7 @@ export default function CourseProgress() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [selectedRow, setSelectedRow] = useState(null);
   const [returnNote, setReturnNote] = useState('');
-  const [manualStep, setManualStep] = useState('');
+  const [selectedVideos, setSelectedVideos] = useState(new Set());
 
   async function ensureStatusesForAgents(profileRows, existingStatuses) {
     const existingAgentIds = new Set((existingStatuses || []).map((row) => row.agent_id));
@@ -95,6 +107,17 @@ export default function CourseProgress() {
     load();
   }, []);
 
+  const progressByAgent = useMemo(() => {
+    const map = {};
+
+    for (const row of progressRows || []) {
+      if (!map[row.agent_id]) map[row.agent_id] = {};
+      map[row.agent_id][Number(row.video_index)] = row;
+    }
+
+    return map;
+  }, [progressRows]);
+
   const completedByAgent = useMemo(() => {
     const map = {};
 
@@ -127,6 +150,43 @@ export default function CourseProgress() {
     });
   }, [rows, search, statusFilter]);
 
+  function openReview(row) {
+    const existingProgress = progressByAgent[row.agent_id] || {};
+    const nextSelected = new Set();
+
+    COURSE_VIDEOS.forEach((_title, index) => {
+      if (existingProgress[index]?.completed) {
+        nextSelected.add(index);
+      }
+    });
+
+    setSelectedRow(row);
+    setReturnNote(row.returned_note || '');
+    setSelectedVideos(nextSelected);
+  }
+
+  function toggleVideo(index) {
+    setSelectedVideos((current) => {
+      const next = new Set(current);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  }
+
+  function selectFirstVideos(count) {
+    const next = new Set();
+
+    for (let i = 0; i < count; i += 1) {
+      next.add(i);
+    }
+
+    setSelectedVideos(next);
+  }
+
   async function approve(row) {
     const {
       data: { session }
@@ -136,6 +196,7 @@ export default function CourseProgress() {
       .from('agent_course_status')
       .update({
         status: 'approved',
+        current_step: COURSE_VIDEO_COUNT,
         approved_at: new Date().toISOString(),
         approved_by: session?.user?.id || null,
         returned_note: null,
@@ -199,55 +260,92 @@ export default function CourseProgress() {
     await load();
   }
 
-  async function setStep(row) {
-    const step = Math.max(0, Math.min(10, Number(manualStep || 0)));
+  async function saveVideoOverrides(row) {
+    const now = new Date().toISOString();
+    const selectedIndexes = Array.from(selectedVideos).sort((a, b) => a - b);
 
-    const updates = [];
+    const existingProgress = progressByAgent[row.agent_id] || {};
+    const existingCompletedIndexes = Object.entries(existingProgress)
+      .filter(([, progress]) => progress?.completed)
+      .map(([index]) => Number(index));
 
-    for (let i = 0; i < step; i += 1) {
-      updates.push({
+    const indexesToMarkComplete = selectedIndexes;
+    const indexesToMarkIncomplete = existingCompletedIndexes.filter((index) => !selectedVideos.has(index));
+
+    if (indexesToMarkComplete.length) {
+      const updates = indexesToMarkComplete.map((index) => ({
         agent_id: row.agent_id,
-        video_index: i,
+        video_index: index,
         completed: true,
-        watched_seconds: 0,
-        completed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      });
-    }
+        watched_seconds: Math.max(Number(existingProgress[index]?.watched_seconds || 0), 9999),
+        completed_at: existingProgress[index]?.completed_at || now,
+        updated_at: now
+      }));
 
-    if (updates.length) {
-      await supabase.from('agent_course_video_progress').upsert(updates, {
+      const { error } = await supabase.from('agent_course_video_progress').upsert(updates, {
         onConflict: 'agent_id,video_index'
       });
+
+      if (error) {
+        setMessage(error.message || 'Could not save completed videos.');
+        return;
+      }
     }
 
-    const { error } = await supabase
+    for (const index of indexesToMarkIncomplete) {
+      const { error } = await supabase
+        .from('agent_course_video_progress')
+        .update({
+          completed: false,
+          completed_at: null,
+          updated_at: now
+        })
+        .eq('agent_id', row.agent_id)
+        .eq('video_index', index);
+
+      if (error) {
+        setMessage(error.message || 'Could not update removed videos.');
+        return;
+      }
+    }
+
+    let currentStep = 0;
+    for (let i = 0; i < COURSE_VIDEO_COUNT; i += 1) {
+      if (selectedVideos.has(i)) {
+        currentStep = i + 1;
+      } else {
+        break;
+      }
+    }
+
+    const { error: statusError } = await supabase
       .from('agent_course_status')
       .update({
-        current_step: step,
-        status: row.status === 'approved' ? 'approved' : step > 0 ? 'in_progress' : 'not_started',
-        updated_at: new Date().toISOString()
+        current_step: currentStep,
+        status: row.status === 'approved' ? 'approved' : currentStep > 0 ? 'in_progress' : 'not_started',
+        updated_at: now
       })
       .eq('id', row.id);
 
-    if (error) {
-      setMessage(error.message || 'Could not set step.');
+    if (statusError) {
+      setMessage(statusError.message || 'Could not update course step.');
       return;
     }
 
     await writeAdminLog({
-      action: 'Manually changed course step',
+      action: 'Updated course video overrides',
       targetType: 'agent_course_status',
       targetId: row.id,
       details: {
         agent_id: row.agent_id,
-        step
+        completed_video_indexes: selectedIndexes,
+        completed_video_numbers: selectedIndexes.map((index) => index + 1),
+        current_step: currentStep
       }
     });
 
-    setManualStep('');
     setSelectedRow(null);
-    setMessage('Course step updated.');
+    setMessage('Video overrides saved.');
     await load();
   }
 
@@ -296,11 +394,7 @@ export default function CourseProgress() {
         <button
           className="btn btn-primary btn-small"
           type="button"
-          onClick={() => {
-            setSelectedRow(row);
-            setReturnNote(row.returned_note || '');
-            setManualStep(String(row.current_step || 0));
-          }}
+          onClick={() => openReview(row)}
         >
           Review
         </button>
@@ -322,7 +416,7 @@ export default function CourseProgress() {
       <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
           <h1>Course Progress</h1>
-          <p>Track new agent course progress, approve final submissions, or return with notes.</p>
+          <p>Track new agent course progress, approve final submissions, or override exact videos.</p>
         </div>
       </div>
 
@@ -388,7 +482,7 @@ export default function CourseProgress() {
             className="glass"
             onClick={(e) => e.stopPropagation()}
             style={{
-              width: 'min(760px, 96vw)',
+              width: 'min(900px, 96vw)',
               maxHeight: '88vh',
               overflow: 'auto',
               padding: 20
@@ -409,7 +503,7 @@ export default function CourseProgress() {
               <div className="glass" style={{ padding: 12 }}>
                 <div style={{ fontSize: 13, opacity: 0.75 }}>Videos</div>
                 <div style={{ fontSize: 20, fontWeight: 800 }}>
-                  {completedByAgent[selectedRow.agent_id] || 0}/{COURSE_VIDEO_COUNT}
+                  {selectedVideos.size}/{COURSE_VIDEO_COUNT}
                 </div>
               </div>
 
@@ -419,6 +513,83 @@ export default function CourseProgress() {
                   {selectedRow.current_step || 0}
                 </div>
               </div>
+            </div>
+
+            <div className="glass top-gap" style={{ padding: 14 }}>
+              <h3 style={{ marginTop: 0 }}>Video Overrides</h3>
+              <p style={{ opacity: 0.75 }}>
+                Select the exact videos you want marked complete. Example: choose only video 1, or use “Complete 1–3”.
+              </p>
+
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+                <button className="btn btn-ghost btn-small" type="button" onClick={() => setSelectedVideos(new Set())}>
+                  Clear All
+                </button>
+
+                <button className="btn btn-ghost btn-small" type="button" onClick={() => selectFirstVideos(1)}>
+                  Complete 1
+                </button>
+
+                <button className="btn btn-ghost btn-small" type="button" onClick={() => selectFirstVideos(3)}>
+                  Complete 1–3
+                </button>
+
+                <button className="btn btn-ghost btn-small" type="button" onClick={() => selectFirstVideos(COURSE_VIDEO_COUNT)}>
+                  Complete All Videos
+                </button>
+              </div>
+
+              <div style={{ display: 'grid', gap: 8 }}>
+                {COURSE_VIDEOS.map((title, index) => {
+                  const checked = selectedVideos.has(index);
+                  const progress = progressByAgent[selectedRow.agent_id]?.[index];
+
+                  return (
+                    <label
+                      key={title}
+                      className="glass"
+                      style={{
+                        padding: 12,
+                        display: 'flex',
+                        gap: 10,
+                        alignItems: 'center',
+                        border: checked
+                          ? '1px solid rgba(16,185,129,0.45)'
+                          : '1px solid rgba(255,255,255,0.08)'
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleVideo(index)}
+                        style={{ width: 18, height: 18 }}
+                      />
+
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 800 }}>
+                          {index + 1}. {title}
+                        </div>
+                        <div style={{ fontSize: 12, opacity: 0.7 }}>
+                          DB: {progress?.completed ? 'Complete' : 'Not complete'} · Watched:{' '}
+                          {Number(progress?.watched_seconds || 0)}s
+                        </div>
+                      </div>
+
+                      <div style={{ fontSize: 13, fontWeight: 800 }}>
+                        {checked ? 'Will be complete' : 'Will be incomplete'}
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+
+              <button
+                className="btn btn-primary top-gap"
+                type="button"
+                onClick={() => saveVideoOverrides(selectedRow)}
+              >
+                Save Video Overrides
+              </button>
             </div>
 
             <div className="glass top-gap" style={{ padding: 14 }}>
@@ -435,30 +606,6 @@ export default function CourseProgress() {
                   {selectedRow.final_recording_note}
                 </div>
               ) : null}
-            </div>
-
-            <div className="glass top-gap" style={{ padding: 14 }}>
-              <h3 style={{ marginTop: 0 }}>Manual Step Override</h3>
-              <p style={{ opacity: 0.75 }}>
-                Use this to skip yourself or an agent forward while testing. Step 10 unlocks the final voice recording.
-              </p>
-
-              <div style={{ display: 'flex', gap: 10, alignItems: 'end', flexWrap: 'wrap' }}>
-                <label style={{ minWidth: 180 }}>
-                  Step
-                  <input
-                    type="number"
-                    min="0"
-                    max="10"
-                    value={manualStep}
-                    onChange={(e) => setManualStep(e.target.value)}
-                  />
-                </label>
-
-                <button className="btn btn-primary" type="button" onClick={() => setStep(selectedRow)}>
-                  Set Step
-                </button>
-              </div>
             </div>
 
             <div className="glass top-gap" style={{ padding: 14 }}>
