@@ -8,6 +8,7 @@ const fullAgentLinks = [
   ['/app/course', 'Course'],
   ['/app/dashboard', 'Dashboard'],
   ['/app/leads', 'Leads'],
+  ['/app/ai-trainer', 'AI Sales Trainer'],
   ['/app/kpi', 'KPI'],
   ['/app/recordings', 'Recordings'],
   ['/app/scripts', 'Scripts'],
