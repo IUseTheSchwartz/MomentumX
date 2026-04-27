@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 
-const COMPLETE_GRACE_SECONDS = 3;
+const COMPLETE_GRACE_SECONDS = 12;
+const COMPLETE_PERCENT_REQUIRED = 0.97;
 
 const COURSE_VIDEOS = [
   {
@@ -79,7 +80,10 @@ function isCloseEnoughToComplete(watchedSeconds, durationSeconds) {
 
   if (!duration || duration <= 0) return false;
 
-  return watched >= Math.max(0, duration - COMPLETE_GRACE_SECONDS);
+  const secondsThreshold = watched >= Math.max(0, duration - COMPLETE_GRACE_SECONDS);
+  const percentThreshold = watched / duration >= COMPLETE_PERCENT_REQUIRED;
+
+  return secondsThreshold || percentThreshold;
 }
 
 function forcePlayerSize(player) {
@@ -458,6 +462,7 @@ export default function NewAgentCourse() {
 
           const time = Number(player.getCurrentTime() || 0);
           const videoDuration = Number(player.getDuration() || 0);
+          const watchedPoint = Math.max(time, maxWatchedRef.current || 0);
 
           setCurrentTime(time);
           if (videoDuration) setDuration(videoDuration);
@@ -470,7 +475,7 @@ export default function NewAgentCourse() {
             queueSaveProgress(activeIndexRef.current, time);
           }
 
-          if (!completed && isCloseEnoughToComplete(time, videoDuration)) {
+          if (!completed && isCloseEnoughToComplete(watchedPoint, videoDuration)) {
             completeVideo(activeIndexRef.current);
           }
         }, 500);
