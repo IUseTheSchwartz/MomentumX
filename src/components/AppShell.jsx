@@ -53,27 +53,7 @@ function getStoredViewAsAgent() {
 function NavBadge({ count }) {
   if (!count) return null;
 
-  return (
-    <span
-      style={{
-        minWidth: 22,
-        height: 22,
-        padding: '0 7px',
-        borderRadius: 999,
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: 12,
-        fontWeight: 800,
-        background: 'rgba(17,217,140,0.18)',
-        border: '1px solid rgba(17,217,140,0.3)',
-        color: '#34d399',
-        lineHeight: 1
-      }}
-    >
-      {count > 99 ? '99+' : count}
-    </span>
-  );
+  return <span className="nav-badge">{count > 99 ? '99+' : count}</span>;
 }
 
 export default function AppShell({ admin = false }) {
@@ -487,6 +467,7 @@ export default function AppShell({ admin = false }) {
   }
 
   const canSwitchToAdmin = Boolean(profile?.is_admin);
+  const shellModeLabel = isViewingAsAgent ? 'Viewing Agent' : admin ? 'Admin' : 'Agent';
 
   return (
     <div
@@ -502,7 +483,7 @@ export default function AppShell({ admin = false }) {
         className="sidebar glass"
         style={{
           flexShrink: 0,
-          width: 260,
+          width: 218,
           height: '100vh',
           minHeight: '100vh',
           overflow: 'hidden',
@@ -510,11 +491,9 @@ export default function AppShell({ admin = false }) {
           flexDirection: 'column'
         }}
       >
-        <div>
-          <div className="brand">Momentum X</div>
-          <div className="brand-sub">
-            {isViewingAsAgent ? 'Viewing Agent' : admin ? 'Admin Control' : 'Agent Ops'}
-          </div>
+        <div className="brand-block">
+          <img className="brand-logo" src="/logo.jpg" alt="Momentum logo" />
+          <div className="brand-sub">{shellModeLabel}</div>
         </div>
 
         <nav
@@ -549,7 +528,7 @@ export default function AppShell({ admin = false }) {
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
           {isLockedAgent ? (
-            <div className="glass" style={{ padding: 10, fontSize: 13, opacity: 0.85 }}>
+            <div className="sidebar-alert">
               Complete the course to unlock Momentum X.
             </div>
           ) : null}
@@ -587,20 +566,7 @@ export default function AppShell({ admin = false }) {
         }}
       >
         {isViewingAsAgent ? (
-          <div
-            style={{
-              flexShrink: 0,
-              padding: '10px 16px',
-              background: 'rgba(251,191,36,0.14)',
-              borderBottom: '1px solid rgba(251,191,36,0.25)',
-              color: '#fbbf24',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 12,
-              fontWeight: 800
-            }}
-          >
+          <div className="view-as-banner">
             <span>
               Viewing as:{' '}
               {effectiveProfile?.display_name ||
