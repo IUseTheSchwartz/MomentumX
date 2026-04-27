@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 
+const COMPLETE_GRACE_SECONDS = 3;
+
 const COURSE_VIDEOS = [
   {
     title: 'Intro',
@@ -69,6 +71,15 @@ function formatTime(seconds) {
   const mins = Math.floor(total / 60);
   const secs = total % 60;
   return `${mins}:${String(secs).padStart(2, '0')}`;
+}
+
+function isCloseEnoughToComplete(watchedSeconds, durationSeconds) {
+  const watched = Number(watchedSeconds || 0);
+  const duration = Number(durationSeconds || 0);
+
+  if (!duration || duration <= 0) return false;
+
+  return watched >= Math.max(0, duration - COMPLETE_GRACE_SECONDS);
 }
 
 function forcePlayerSize(player) {
@@ -405,6 +416,14 @@ export default function NewAgentCourse() {
               setDuration(videoDuration);
               setVideoReady(true);
 
+              if (
+                !completedIndexes.has(activeIndex) &&
+                isCloseEnoughToComplete(savedSeconds, videoDuration)
+              ) {
+                completeVideo(activeIndex);
+                return;
+              }
+
               if (savedSeconds > 0 && savedSeconds < videoDuration) {
                 player.seekTo(savedSeconds, true);
                 setCurrentTime(savedSeconds);
@@ -451,7 +470,7 @@ export default function NewAgentCourse() {
             queueSaveProgress(activeIndexRef.current, time);
           }
 
-          if (!completed && videoDuration > 0 && time >= videoDuration - 1) {
+          if (!completed && isCloseEnoughToComplete(time, videoDuration)) {
             completeVideo(activeIndexRef.current);
           }
         }, 500);
@@ -777,7 +796,7 @@ export default function NewAgentCourse() {
               <div style={{ marginTop: 12, fontSize: 13, opacity: 0.75 }}>
                 {isApproved
                   ? 'Course access is unlocked. You can rewatch any video anytime.'
-                  : 'You can go back anytime. You can only go forward up to the farthest point you have watched. This video completes automatically when it ends.'}
+                  : 'You can go back anytime. You can only go forward up to the farthest point you have watched. This video completes automatically near the end.'}
               </div>
             </>
           ) : (
