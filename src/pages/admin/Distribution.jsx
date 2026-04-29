@@ -10,6 +10,12 @@ const blankSetup = {
   fresh_amount: '0'
 };
 
+const blankManualGrant = {
+  agent_id: '',
+  aged_amount: '0',
+  fresh_amount: '0'
+};
+
 function getDaysLeft(profile) {
   if (!profile?.lead_program_active) return 0;
   if (!profile?.lead_program_started_at) return PROGRAM_DAYS;
@@ -46,8 +52,10 @@ export default function Distribution() {
     fresh: 0
   });
   const [form, setForm] = useState(blankSetup);
+  const [manualGrant, setManualGrant] = useState(blankManualGrant);
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
+  const [manualSaving, setManualSaving] = useState(false);
   const [runningSetupId, setRunningSetupId] = useState('');
   const [confirmSetup, setConfirmSetup] = useState(null);
 
@@ -101,6 +109,10 @@ export default function Distribution() {
     return profiles.filter((profile) => profile.lead_program_active && getDaysLeft(profile) <= 0);
   }, [profiles]);
 
+  const selectedManualAgent = useMemo(() => {
+    return profiles.find((profile) => profile.id === manualGrant.agent_id) || null;
+  }, [profiles, manualGrant.agent_id]);
+
   function getRunPreview(setup) {
     const agedPerAgent = Number(setup?.aged_amount || 0);
     const freshPerAgent = Number(setup?.fresh_amount || 0);
@@ -115,6 +127,116 @@ export default function Distribution() {
       totalFresh: agentCount * freshPerAgent,
       totalLeads: agentCount * (agedPerAgent + freshPerAgent)
     };
+  }
+
+  async function getUnassignedLeadIds(category, amount, allowedLeadTypes) {
+    const safeAmount = Number(amount || 0);
+
+    if (safeAmount <= 0) return [];
+
+    let query = supabase
+      .from('leads')
+      .select('id')
+      .is('assigned_to', null)
+      .eq('status', 'New')
+      .eq('lead_category', category)
+      .order('created_at', { ascending: true })
+      .limit(safeAmount);
+
+    if (Array.isArray(allowedLeadTypes) && allowedLeadTypes.length > 0) {
+      query = query.in('lead_type', allowedLeadTypes);
+    }
+
+    const { data, error } = await query;
+
+    if (error) throw error;
+
+    return (data || []).map((lead) => lead.id);
+  }
+
+  async function assignLeadIdsToAgent(leadIds, agentId) {
+    if (!leadIds.length) return 0;
+
+    const { data, error } = await supabase
+      .from('leads')
+      .update({
+        assigned_to: agentId,
+        assigned_at: new Date().toISOString()
+      })
+      .in('id', leadIds)
+      .is('assigned_to', null)
+      .eq('status', 'New')
+      .select('id');
+
+    if (error) throw error;
+
+    return data?.length || 0;
+  }
+
+  async function giveManualLeads(e) {
+    e.preventDefault();
+    setMessage('');
+    setManualSaving(true);
+
+    try {
+      const agentId = manualGrant.agent_id;
+      const agedAmount = Number(manualGrant.aged_amount || 0);
+      const freshAmount = Number(manualGrant.fresh_amount || 0);
+      const agent = profiles.find((profile) => profile.id === agentId);
+
+      if (!agentId || !agent) {
+        setMessage('Pick an agent first.');
+        return;
+      }
+
+      if (agedAmount + freshAmount <= 0) {
+        setMessage('Set at least 1 aged or fresh lead to give.');
+        return;
+      }
+
+      const allowedLeadTypes = Array.isArray(agent.allowed_lead_types)
+        ? agent.allowed_lead_types.filter(Boolean)
+        : [];
+
+      const [agedLeadIds, freshLeadIds] = await Promise.all([
+        getUnassignedLeadIds('aged', agedAmount, allowedLeadTypes),
+        getUnassignedLeadIds('fresh', freshAmount, allowedLeadTypes)
+      ]);
+
+      const assignedAged = await assignLeadIdsToAgent(agedLeadIds, agentId);
+      const assignedFresh = await assignLeadIdsToAgent(freshLeadIds, agentId);
+      const assignedTotal = assignedAged + assignedFresh;
+
+      await writeAdminLog({
+        action: 'Manually gave leads to agent',
+        targetType: 'profile',
+        targetId: agentId,
+        details: {
+          agent: agent.display_name || agent.email || agentId,
+          requestedAged: agedAmount,
+          requestedFresh: freshAmount,
+          assignedAged,
+          assignedFresh,
+          assignedTotal,
+          onlyUnassignedNewLeads: true,
+          allowedLeadTypes
+        }
+      });
+
+      setManualGrant(blankManualGrant);
+
+      setMessage(
+        `Manual assignment complete: gave ${formatNumber(assignedTotal)} total leads to ${
+          agent.display_name || agent.email || 'agent'
+        }. Aged: ${formatNumber(assignedAged)}. Fresh: ${formatNumber(assignedFresh)}.`
+      );
+
+      await load();
+    } catch (error) {
+      setMessage(error.message || 'Could not give leads to agent.');
+    } finally {
+      setManualSaving(false);
+    }
   }
 
   async function createSetup(e) {
@@ -291,7 +413,94 @@ export default function Distribution() {
           </div>
         </div>
 
-        <form className="form glass" onSubmit={createSetup}>
+        <form className="form glass" onSubmit={giveManualLeads}>
+          <h2 style={{ marginTop: 0 }}>Give Leads to One Agent</h2>
+          <p style={{ marginTop: -4, opacity: 0.75 }}>
+            Assigns only unassigned leads with status New. It will not touch leads already assigned to another agent.
+          </p>
+
+          <div className="form-grid">
+            <label>
+              Agent
+              <select
+                value={manualGrant.agent_id}
+                onChange={(e) =>
+                  setManualGrant((s) => ({
+                    ...s,
+                    agent_id: e.target.value
+                  }))
+                }
+              >
+                <option value="">Pick an agent</option>
+                {activeAgents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.display_name || agent.email || 'Unnamed Agent'}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Aged Leads to Give
+              <input
+                type="number"
+                min="0"
+                value={manualGrant.aged_amount}
+                onChange={(e) =>
+                  setManualGrant((s) => ({
+                    ...s,
+                    aged_amount: e.target.value
+                  }))
+                }
+              />
+            </label>
+
+            <label>
+              Fresh Leads to Give
+              <input
+                type="number"
+                min="0"
+                value={manualGrant.fresh_amount}
+                onChange={(e) =>
+                  setManualGrant((s) => ({
+                    ...s,
+                    fresh_amount: e.target.value
+                  }))
+                }
+              />
+            </label>
+
+            <label>
+              Total Leads
+              <input
+                type="number"
+                value={Number(manualGrant.aged_amount || 0) + Number(manualGrant.fresh_amount || 0)}
+                readOnly
+              />
+            </label>
+          </div>
+
+          {selectedManualAgent ? (
+            <div style={{ marginTop: 12, fontSize: 13, opacity: 0.78 }}>
+              Allowed lead types for this agent:{' '}
+              <strong>{(selectedManualAgent.allowed_lead_types || []).join(', ') || 'None selected'}</strong>
+            </div>
+          ) : null}
+
+          <div style={{ marginTop: 12, fontSize: 13, opacity: 0.78 }}>
+            Available inventory: {formatNumber(inventory.aged)} aged / {formatNumber(inventory.fresh)} fresh.
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+            <button className="btn btn-primary" type="submit" disabled={manualSaving}>
+              {manualSaving ? 'Giving Leads...' : 'Give Leads'}
+            </button>
+          </div>
+
+          {message ? <div className="top-gap">{message}</div> : null}
+        </form>
+
+        <form className="form glass top-gap" onSubmit={createSetup}>
           <h2 style={{ marginTop: 0 }}>Create Setup</h2>
 
           <div className="form-grid">
@@ -339,8 +548,6 @@ export default function Distribution() {
               {saving ? 'Saving...' : 'Save Setup'}
             </button>
           </div>
-
-          {message ? <div className="top-gap">{message}</div> : null}
         </form>
 
         <div className="glass top-gap" style={{ padding: 16 }}>
