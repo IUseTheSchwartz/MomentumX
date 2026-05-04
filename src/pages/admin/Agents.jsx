@@ -46,6 +46,30 @@ function getProgramStatus(row) {
   return 'Active';
 }
 
+async function fetchAllAssignedLeadCountRows() {
+  const pageSize = 1000;
+  let from = 0;
+  let allRows = [];
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('leads')
+      .select('assigned_to, sale')
+      .not('assigned_to', 'is', null)
+      .range(from, from + pageSize - 1);
+
+    if (error) throw error;
+
+    const rows = data || [];
+    allRows = [...allRows, ...rows];
+
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+
+  return allRows;
+}
+
 export default function Agents() {
   const navigate = useNavigate();
 
@@ -58,21 +82,18 @@ export default function Agents() {
   const [pageSize, setPageSize] = useState('50');
 
   async function load() {
-    const [{ data, error }, { data: leadRows, error: leadError }] = await Promise.all([
-      supabase.from('profiles').select('*').order('created_at', { ascending: false }),
-      supabase.from('leads').select('assigned_to, sale').not('assigned_to', 'is', null)
-    ]);
+    try {
+      const [{ data, error }, leadRows] = await Promise.all([
+        supabase.from('profiles').select('*').order('created_at', { ascending: false }),
+        fetchAllAssignedLeadCountRows()
+      ]);
 
-    if (error) {
-      setMessage(error.message || 'Could not load agents.');
-      setRows([]);
-      return;
-    }
+      if (error) {
+        setMessage(error.message || 'Could not load agents.');
+        setRows([]);
+        return;
+      }
 
-    if (leadError) {
-      setMessage(leadError.message || 'Could not load lead counts.');
-      setLeadCounts({});
-    } else {
       const counts = {};
 
       (leadRows || []).forEach((lead) => {
@@ -96,9 +117,12 @@ export default function Agents() {
       });
 
       setLeadCounts(counts);
+      setRows(data || []);
+    } catch (error) {
+      setMessage(error.message || 'Could not load agents.');
+      setRows([]);
+      setLeadCounts({});
     }
-
-    setRows(data || []);
   }
 
   useEffect(() => {
@@ -472,7 +496,11 @@ export default function Agents() {
             View As
           </button>
 
-          <button className="btn btn-ghost btn-small" onClick={() => restartProgram(row)} type="button">
+          <button
+            className="btn btn-ghost btn-small"
+            onClick={() => restartProgram(row)}
+            type="button"
+          >
             Restart 10 Weeks
           </button>
         </div>
