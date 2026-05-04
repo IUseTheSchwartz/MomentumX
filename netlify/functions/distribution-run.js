@@ -5,7 +5,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const PROGRAM_DAYS = 90;
+const PROGRAM_DAYS = 70;
 
 function getDaysLeft(profile) {
   if (!profile?.lead_program_active) return 0;
@@ -40,7 +40,7 @@ async function fetchUnassignedLeadIds({ leadCategory, leadType, limit }) {
     .is('assigned_to', null)
     .eq('lead_category', leadCategory)
     .eq('lead_type', leadType)
-    .eq('status', 'New')
+    .order('created_at', { ascending: true })
     .limit(limit);
 
   if (error) throw error;
@@ -77,8 +77,7 @@ async function fetchAvailableCountsByType({ leadCategory, leadTypes }) {
         .select('id', { count: 'exact', head: true })
         .is('assigned_to', null)
         .eq('lead_category', leadCategory)
-        .eq('lead_type', leadType)
-        .eq('status', 'New');
+        .eq('lead_type', leadType);
 
       if (error) throw error;
       counts[leadType] = Number(count || 0);
