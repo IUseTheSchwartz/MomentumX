@@ -50,21 +50,52 @@ export default function Agents() {
   const navigate = useNavigate();
 
   const [rows, setRows] = useState([]);
+  const [leadCounts, setLeadCounts] = useState({});
+  const [reclaimingId, setReclaimingId] = useState('');
   const [message, setMessage] = useState('');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [pageSize, setPageSize] = useState('50');
 
   async function load() {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .order('created_at', { ascending: false });
+    const [{ data, error }, { data: leadRows, error: leadError }] = await Promise.all([
+      supabase.from('profiles').select('*').order('created_at', { ascending: false }),
+      supabase.from('leads').select('assigned_to, sale').not('assigned_to', 'is', null)
+    ]);
 
     if (error) {
       setMessage(error.message || 'Could not load agents.');
       setRows([]);
       return;
+    }
+
+    if (leadError) {
+      setMessage(leadError.message || 'Could not load lead counts.');
+      setLeadCounts({});
+    } else {
+      const counts = {};
+
+      (leadRows || []).forEach((lead) => {
+        if (!lead.assigned_to) return;
+
+        if (!counts[lead.assigned_to]) {
+          counts[lead.assigned_to] = {
+            total: 0,
+            unsold: 0,
+            sold: 0
+          };
+        }
+
+        counts[lead.assigned_to].total += 1;
+
+        if (lead.sale) {
+          counts[lead.assigned_to].sold += 1;
+        } else {
+          counts[lead.assigned_to].unsold += 1;
+        }
+      });
+
+      setLeadCounts(counts);
     }
 
     setRows(data || []);
@@ -97,6 +128,66 @@ export default function Agents() {
 
     setMessage('Agent updated.');
     load();
+  }
+
+  async function reclaimUnsoldLeads(row) {
+    const countsBefore = leadCounts[row.id] || { total: 0, unsold: 0, sold: 0 };
+
+    if (countsBefore.unsold <= 0) {
+      setMessage('This agent has no unsold leads to reclaim.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Reclaim ${countsBefore.unsold} UNSOLD leads from ${
+        row.display_name || row.email || 'this agent'
+      }? Sold leads will stay assigned.`
+    );
+
+    if (!confirmed) return;
+
+    setMessage('');
+    setReclaimingId(row.id);
+
+    try {
+      const { data, error } = await supabase
+        .from('leads')
+        .update({
+          assigned_to: null,
+          assigned_at: null
+        })
+        .eq('assigned_to', row.id)
+        .eq('sale', false)
+        .select('id');
+
+      if (error) throw error;
+
+      const reclaimedCount = data?.length || 0;
+
+      await writeAdminLog({
+        action: 'Reclaimed unsold agent leads',
+        targetType: 'profile',
+        targetId: row.id,
+        details: {
+          agent: row.display_name || row.email || row.id,
+          reclaimedCount,
+          before: countsBefore,
+          soldLeadsKeptAssigned: true
+        }
+      });
+
+      setMessage(
+        `Reclaimed ${reclaimedCount} unsold leads from ${
+          row.display_name || row.email || 'agent'
+        }. Sold leads stayed assigned.`
+      );
+
+      await load();
+    } catch (error) {
+      setMessage(error.message || 'Could not reclaim leads.');
+    } finally {
+      setReclaimingId('');
+    }
   }
 
   async function viewAsAgent(row) {
@@ -132,9 +223,7 @@ export default function Agents() {
 
   function toggleLeadType(row, type) {
     const current = Array.isArray(row.allowed_lead_types) ? row.allowed_lead_types : [];
-    const next = current.includes(type)
-      ? current.filter((x) => x !== type)
-      : [...current, type];
+    const next = current.includes(type) ? current.filter((x) => x !== type) : [...current, type];
 
     updateProfile(row.id, { allowed_lead_types: next }, 'Updated allowed lead types');
   }
@@ -179,13 +268,18 @@ export default function Agents() {
 
   const filteredRows = useMemo(() => {
     let next = rows.filter((row) => {
+      const counts = leadCounts[row.id] || { total: 0, unsold: 0, sold: 0 };
+
       const text = [
         row.display_name,
         row.email,
         row.discord_username,
         getProgramStatus(row),
         row.course_override_complete ? 'course complete override' : 'course required',
-        Array.isArray(row.allowed_lead_types) ? row.allowed_lead_types.join(' ') : ''
+        Array.isArray(row.allowed_lead_types) ? row.allowed_lead_types.join(' ') : '',
+        `${counts.total} total leads`,
+        `${counts.unsold} unsold leads`,
+        `${counts.sold} sold leads`
       ]
         .filter(Boolean)
         .join(' ')
@@ -211,7 +305,7 @@ export default function Agents() {
     }
 
     return next;
-  }, [rows, search, statusFilter]);
+  }, [rows, leadCounts, search, statusFilter]);
 
   const visibleRows = useMemo(() => {
     if (pageSize === 'all') return filteredRows;
@@ -265,6 +359,31 @@ export default function Agents() {
             }}
           >
             {status === 'Expired' ? 'Expired' : `${daysLeft} days`}
+          </div>
+        );
+      }
+    },
+    {
+      key: 'assigned_leads',
+      label: 'Assigned Leads',
+      render: (_value, row) => {
+        const counts = leadCounts[row.id] || { total: 0, unsold: 0, sold: 0 };
+
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ fontWeight: 800 }}>{counts.total} total</div>
+            <div style={{ fontSize: 12, opacity: 0.75 }}>
+              {counts.unsold} unsold / {counts.sold} sold
+            </div>
+
+            <button
+              className="btn btn-danger btn-small"
+              type="button"
+              onClick={() => reclaimUnsoldLeads(row)}
+              disabled={reclaimingId === row.id || counts.unsold <= 0}
+            >
+              {reclaimingId === row.id ? 'Reclaiming...' : 'Reclaim Unsold'}
+            </button>
           </div>
         );
       }
@@ -353,11 +472,7 @@ export default function Agents() {
             View As
           </button>
 
-          <button
-            className="btn btn-ghost btn-small"
-            onClick={() => restartProgram(row)}
-            type="button"
-          >
+          <button className="btn btn-ghost btn-small" onClick={() => restartProgram(row)} type="button">
             Restart 10 Weeks
           </button>
         </div>
@@ -381,7 +496,7 @@ export default function Agents() {
           <h1>Agents</h1>
           <p>
             Manage 10-week lead program access, lead types, pauses, eligibility, course overrides,
-            and view the platform as an agent.
+            lead counts, reclaiming unsold leads, and view the platform as an agent.
           </p>
         </div>
       </div>
@@ -399,7 +514,7 @@ export default function Agents() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Agent name, email, status, lead type, or course..."
+              placeholder="Agent name, email, status, lead type, course, or lead count..."
             />
           </label>
 
