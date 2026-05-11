@@ -150,7 +150,9 @@ function isValidDateParts(year, month, day) {
 }
 
 function toIsoDate(year, month, day) {
-  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(
+    day
+  ).padStart(2, '0')}`;
 }
 
 function normalizeDob(value) {
@@ -159,16 +161,12 @@ function normalizeDob(value) {
   const raw = String(value).trim();
   if (!raw) return null;
 
-  // Excel-style numeric serial dates are intentionally not handled here.
-  // This parser is for string DOB formats only.
-
   const normalized = raw.replace(/\./g, '/').replace(/-/g, '/').replace(/\s+/g, '');
   const parts = normalized.split('/');
 
   if (parts.length === 3 && parts.every((part) => /^\d+$/.test(part))) {
     const [a, b, c] = parts.map((part) => Number(part));
 
-    // yyyy/mm/dd
     if (String(parts[0]).length === 4) {
       if (isValidDateParts(a, b, c)) {
         return toIsoDate(a, b, c);
@@ -176,26 +174,21 @@ function normalizeDob(value) {
       return null;
     }
 
-    // dd/mm/yyyy or mm/dd/yyyy
     if (String(parts[2]).length === 4) {
       const year = c;
 
-      // Prefer day-first when it is clearly day-first.
       if (a > 12 && isValidDateParts(year, b, a)) {
         return toIsoDate(year, b, a);
       }
 
-      // Prefer month-first when it is clearly month-first.
       if (b > 12 && isValidDateParts(year, a, b)) {
         return toIsoDate(year, a, b);
       }
 
-      // If both are possible (example: 03/07/1998), default to month/day/year
       if (isValidDateParts(year, a, b)) {
         return toIsoDate(year, a, b);
       }
 
-      // Fallback to day/month/year
       if (isValidDateParts(year, b, a)) {
         return toIsoDate(year, b, a);
       }
@@ -250,6 +243,28 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
 
   const email = getFirstValue(rawRow, ['email', 'Email', 'email_address']);
 
+  const address = getFirstValue(rawRow, [
+    'address',
+    'Address',
+    'street_address',
+    'Street Address',
+    'mailing_address',
+    'Mailing Address',
+    'home_address',
+    'Home Address'
+  ]);
+
+  const city = getFirstValue(rawRow, ['city', 'City', 'town', 'Town']);
+
+  const state = getFirstValue(rawRow, [
+    'state',
+    'State',
+    'st',
+    'ST',
+    'province',
+    'Province'
+  ]);
+
   const dob = normalizeDob(
     getFirstValue(rawRow, ['dob', 'DOB', 'date_of_birth', 'Date of Birth'])
   );
@@ -275,6 +290,9 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
     last_name: lastName || null,
     phone: normalizePhone(phone),
     email: email || null,
+    address: address || null,
+    city: city || null,
+    state: state || null,
     lead_type: leadType,
     lead_category: leadCategory,
     status: 'New',
@@ -333,6 +351,9 @@ function matchesSearch(row, query) {
     row.last_name,
     row.phone,
     row.email,
+    row.address,
+    row.city,
+    row.state,
     row.lead_type,
     row.status,
     row.source_batch,
@@ -524,6 +545,9 @@ export default function LeadsAdmin() {
     { key: 'last_name', label: 'Last' },
     { key: 'phone', label: 'Phone' },
     { key: 'email', label: 'Email' },
+    { key: 'address', label: 'Address', render: (v) => v || '—' },
+    { key: 'city', label: 'City', render: (v) => v || '—' },
+    { key: 'state', label: 'State', render: (v) => v || '—' },
     { key: 'dob', label: 'DOB', render: (v) => formatDateOnly(v) },
     {
       key: 'military_branch',
@@ -645,7 +669,7 @@ export default function LeadsAdmin() {
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Name, phone, email, batch..."
+                placeholder="Name, phone, email, city, state, batch..."
               />
             </label>
 
@@ -700,7 +724,8 @@ export default function LeadsAdmin() {
           </div>
 
           <div className="top-gap" style={{ fontSize: 14, opacity: 0.85 }}>
-            Showing {visibleRows.length} of {filteredRows.length} loaded leads · Total in table: {totalCount}
+            Showing {visibleRows.length} of {filteredRows.length} loaded leads · Total in table:{' '}
+            {totalCount}
           </div>
         </div>
 
