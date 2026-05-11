@@ -6,6 +6,7 @@ import { writeAdminLog } from '../../lib/adminLog';
 
 const leadTypes = ['Veteran', 'Trucker IUL', 'Mortgage', 'General IUL'];
 const MAX_SHOW_ALL_ROWS = 5000;
+const UPLOAD_CHUNK_SIZE = 500;
 
 function formatDate(value) {
   if (!value) return '—';
@@ -497,8 +498,22 @@ export default function LeadsAdmin() {
 
       const leadRows = validateMappedRows(mappedRows);
 
-      const { error: leadsError } = await supabase.from('leads').insert(leadRows);
-      if (leadsError) throw leadsError;
+      for (let i = 0; i < leadRows.length; i += UPLOAD_CHUNK_SIZE) {
+        const chunk = leadRows.slice(i, i + UPLOAD_CHUNK_SIZE);
+        const savedCount = Math.min(i + UPLOAD_CHUNK_SIZE, leadRows.length);
+
+        setMessage(`Uploading... ${savedCount} of ${leadRows.length} leads saved.`);
+
+        const { error: leadsError } = await supabase.from('leads').insert(chunk);
+
+        if (leadsError) {
+          throw new Error(
+            `Upload failed on rows ${i + 1}-${savedCount}: ${
+              leadsError.message || 'Unknown error'
+            }`
+          );
+        }
+      }
 
       await writeAdminLog({
         action: 'Imported leads batch',
@@ -510,6 +525,7 @@ export default function LeadsAdmin() {
           lead_category: leadCategory,
           total_uploaded: leadRows.length,
           original_rows_detected: parsedRows.length,
+          chunk_size: UPLOAD_CHUNK_SIZE,
           summary: `Imported ${leadRows.length} ${leadCategory} ${leadType} leads into batch "${finalBatchName}".`
         }
       });
