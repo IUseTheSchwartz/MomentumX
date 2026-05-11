@@ -5,6 +5,7 @@ import DataTable from '../../components/DataTable';
 import { writeAdminLog } from '../../lib/adminLog';
 
 const leadTypes = ['Veteran', 'Trucker IUL', 'Mortgage', 'General IUL'];
+const MAX_SHOW_ALL_ROWS = 5000;
 
 function formatDate(value) {
   if (!value) return '—';
@@ -66,7 +67,6 @@ function splitLine(line, delimiter) {
   }
 
   result.push(current.trim());
-
   return result.map((value) => value.replace(/^"|"$/g, '').trim());
 }
 
@@ -168,30 +168,17 @@ function normalizeDob(value) {
     const [a, b, c] = parts.map((part) => Number(part));
 
     if (String(parts[0]).length === 4) {
-      if (isValidDateParts(a, b, c)) {
-        return toIsoDate(a, b, c);
-      }
+      if (isValidDateParts(a, b, c)) return toIsoDate(a, b, c);
       return null;
     }
 
     if (String(parts[2]).length === 4) {
       const year = c;
 
-      if (a > 12 && isValidDateParts(year, b, a)) {
-        return toIsoDate(year, b, a);
-      }
-
-      if (b > 12 && isValidDateParts(year, a, b)) {
-        return toIsoDate(year, a, b);
-      }
-
-      if (isValidDateParts(year, a, b)) {
-        return toIsoDate(year, a, b);
-      }
-
-      if (isValidDateParts(year, b, a)) {
-        return toIsoDate(year, b, a);
-      }
+      if (a > 12 && isValidDateParts(year, b, a)) return toIsoDate(year, b, a);
+      if (b > 12 && isValidDateParts(year, a, b)) return toIsoDate(year, a, b);
+      if (isValidDateParts(year, a, b)) return toIsoDate(year, a, b);
+      if (isValidDateParts(year, b, a)) return toIsoDate(year, b, a);
 
       return null;
     }
@@ -231,8 +218,13 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
 
   const phone = getFirstValue(rawRow, [
     'phone',
+    'phone_number',
+    'phone_number_',
+    'phonenumber',
     'phone_1',
     'Phone',
+    'Phone Number',
+    'PhoneNumber',
     'Phone 1',
     'mobile',
     'Mobile',
@@ -241,13 +233,17 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
     'confirm_your_phone'
   ]);
 
-  const email = getFirstValue(rawRow, ['email', 'Email', 'email_address']);
+  const email = getFirstValue(rawRow, ['email', 'Email', 'email_address', 'Email Address']);
 
   const address = getFirstValue(rawRow, [
     'address',
     'Address',
     'street_address',
     'Street Address',
+    'street',
+    'Street',
+    'address_line_1',
+    'Address Line 1',
     'mailing_address',
     'Mailing Address',
     'home_address',
@@ -259,10 +255,23 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
   const state = getFirstValue(rawRow, [
     'state',
     'State',
+    'state_code',
+    'State Code',
     'st',
     'ST',
     'province',
     'Province'
+  ]);
+
+  const zip = getFirstValue(rawRow, [
+    'zip',
+    'Zip',
+    'zipcode',
+    'Zipcode',
+    'zip_code',
+    'Zip Code',
+    'postal_code',
+    'Postal Code'
   ]);
 
   const dob = normalizeDob(
@@ -283,7 +292,7 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
     'military'
   ]);
 
-  const baseRow = {
+  return {
     batch_id: batchId,
     source_batch: batchName,
     first_name: firstName || null,
@@ -293,6 +302,7 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
     address: address || null,
     city: city || null,
     state: state || null,
+    zip: zip || null,
     lead_type: leadType,
     lead_category: leadCategory,
     status: 'New',
@@ -300,34 +310,6 @@ function mapLeadRow(rawRow, leadType, leadCategory, batchId, batchName) {
     beneficiary_name: beneficiaryName || null,
     military_branch: leadType === 'Veteran' ? militaryBranch || null : null
   };
-
-  if (leadType === 'Veteran') {
-    return {
-      ...baseRow,
-      first_name:
-        getFirstValue(rawRow, ['First Name', 'first_name', 'firstname']) || baseRow.first_name,
-      last_name:
-        getFirstValue(rawRow, ['Last Name', 'last_name', 'lastname']) || baseRow.last_name,
-      phone:
-        normalizePhone(getFirstValue(rawRow, ['Phone 1', 'phone_1', 'phone'])) || baseRow.phone,
-      email: getFirstValue(rawRow, ['Email', 'email']) || baseRow.email
-    };
-  }
-
-  if (leadType === 'Trucker IUL') {
-    return {
-      ...baseRow,
-      first_name:
-        getFirstValue(rawRow, ['First Name', 'first_name', 'firstname']) || baseRow.first_name,
-      last_name:
-        getFirstValue(rawRow, ['Last Name', 'last_name', 'lastname']) || baseRow.last_name,
-      phone:
-        normalizePhone(getFirstValue(rawRow, ['Phone 1', 'phone_1', 'phone'])) || baseRow.phone,
-      email: getFirstValue(rawRow, ['Email', 'email']) || baseRow.email
-    };
-  }
-
-  return baseRow;
 }
 
 function validateMappedRows(leadRows) {
@@ -346,6 +328,7 @@ function validateMappedRows(leadRows) {
 
 function matchesSearch(row, query) {
   if (!query) return true;
+
   const text = [
     row.first_name,
     row.last_name,
@@ -354,6 +337,7 @@ function matchesSearch(row, query) {
     row.address,
     row.city,
     row.state,
+    row.zip,
     row.lead_type,
     row.status,
     row.source_batch,
@@ -371,11 +355,16 @@ function matchesSearch(row, query) {
 export default function LeadsAdmin() {
   const [rows, setRows] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
+  const [assignedCount, setAssignedCount] = useState(0);
+  const [unassignedCount, setUnassignedCount] = useState(0);
+  const [filteredCount, setFilteredCount] = useState(0);
+
   const [file, setFile] = useState(null);
   const [leadType, setLeadType] = useState('Veteran');
   const [leadCategory, setLeadCategory] = useState('aged');
   const [batchName, setBatchName] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
   const [search, setSearch] = useState('');
@@ -385,34 +374,73 @@ export default function LeadsAdmin() {
   const [sortOrder, setSortOrder] = useState('newest');
   const [pageSize, setPageSize] = useState('50');
 
-  async function load() {
-    const [{ data, error }, { count, error: countError }] = await Promise.all([
-      supabase
-        .from('leads')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(1000),
-      supabase.from('leads').select('id', { count: 'exact', head: true })
+  async function loadCounts() {
+    const [{ count: total }, { count: assigned }, { count: unassigned }] = await Promise.all([
+      supabase.from('leads').select('id', { count: 'exact', head: true }),
+      supabase.from('leads').select('id', { count: 'exact', head: true }).not('assigned_to', 'is', null),
+      supabase.from('leads').select('id', { count: 'exact', head: true }).is('assigned_to', null)
     ]);
 
-    if (error) {
+    setTotalCount(total || 0);
+    setAssignedCount(assigned || 0);
+    setUnassignedCount(unassigned || 0);
+  }
+
+  async function load() {
+    setLoading(true);
+
+    try {
+      await loadCounts();
+
+      const limit = pageSize === 'all' ? MAX_SHOW_ALL_ROWS : Number(pageSize);
+
+      let countQuery = supabase.from('leads').select('id', { count: 'exact', head: true });
+      let dataQuery = supabase.from('leads').select('*');
+
+      if (typeFilter !== 'all') {
+        countQuery = countQuery.eq('lead_type', typeFilter);
+        dataQuery = dataQuery.eq('lead_type', typeFilter);
+      }
+
+      if (categoryFilter !== 'all') {
+        countQuery = countQuery.eq('lead_category', categoryFilter);
+        dataQuery = dataQuery.eq('lead_category', categoryFilter);
+      }
+
+      if (assignedFilter === 'assigned') {
+        countQuery = countQuery.not('assigned_to', 'is', null);
+        dataQuery = dataQuery.not('assigned_to', 'is', null);
+      }
+
+      if (assignedFilter === 'unassigned') {
+        countQuery = countQuery.is('assigned_to', null);
+        dataQuery = dataQuery.is('assigned_to', null);
+      }
+
+      const [{ count, error: countError }, { data, error }] = await Promise.all([
+        countQuery,
+        dataQuery
+          .order('created_at', { ascending: sortOrder === 'oldest' })
+          .limit(limit)
+      ]);
+
+      if (countError) throw countError;
+      if (error) throw error;
+
+      setFilteredCount(count || 0);
+      setRows(data || []);
+    } catch (error) {
       console.error('Failed to load admin leads:', error);
       setRows([]);
-    } else {
-      setRows(data || []);
-    }
-
-    if (countError) {
-      console.error('Failed to count admin leads:', countError);
-      setTotalCount((data || []).length);
-    } else {
-      setTotalCount(count || 0);
+      setFilteredCount(0);
+    } finally {
+      setLoading(false);
     }
   }
 
   useEffect(() => {
     load();
-  }, []);
+  }, [typeFilter, categoryFilter, assignedFilter, sortOrder, pageSize]);
 
   async function handleUpload(e) {
     e.preventDefault();
@@ -493,6 +521,7 @@ export default function LeadsAdmin() {
       setMessage(
         `Uploaded ${leadRows.length} ${leadCategory} ${leadType} leads to batch "${finalBatchName}".`
       );
+
       await load();
     } catch (error) {
       setMessage(error.message || 'Upload failed.');
@@ -501,44 +530,9 @@ export default function LeadsAdmin() {
     }
   }
 
-  const filteredRows = useMemo(() => {
-    const next = rows
-      .filter((row) => matchesSearch(row, search))
-      .filter((row) => (typeFilter === 'all' ? true : row.lead_type === typeFilter))
-      .filter((row) => (categoryFilter === 'all' ? true : row.lead_category === categoryFilter))
-      .filter((row) => {
-        if (assignedFilter === 'assigned') return Boolean(row.assigned_to);
-        if (assignedFilter === 'unassigned') return !row.assigned_to;
-        return true;
-      });
-
-    next.sort((a, b) => {
-      const aTime = new Date(a.created_at || 0).getTime();
-      const bTime = new Date(b.created_at || 0).getTime();
-      return sortOrder === 'oldest' ? aTime - bTime : bTime - aTime;
-    });
-
-    return next;
-  }, [rows, search, typeFilter, categoryFilter, assignedFilter, sortOrder]);
-
   const visibleRows = useMemo(() => {
-    if (pageSize === 'all') return filteredRows;
-    return filteredRows.slice(0, Number(pageSize));
-  }, [filteredRows, pageSize]);
-
-  const totals = useMemo(() => {
-    return rows.reduce(
-      (acc, row) => {
-        if (row.assigned_to) acc.assigned += 1;
-        else acc.unassigned += 1;
-        return acc;
-      },
-      {
-        assigned: 0,
-        unassigned: 0
-      }
-    );
-  }, [rows]);
+    return rows.filter((row) => matchesSearch(row, search));
+  }, [rows, search]);
 
   const columns = [
     { key: 'first_name', label: 'First' },
@@ -548,6 +542,7 @@ export default function LeadsAdmin() {
     { key: 'address', label: 'Address', render: (v) => v || '—' },
     { key: 'city', label: 'City', render: (v) => v || '—' },
     { key: 'state', label: 'State', render: (v) => v || '—' },
+    { key: 'zip', label: 'ZIP', render: (v) => v || '—' },
     { key: 'dob', label: 'DOB', render: (v) => formatDateOnly(v) },
     {
       key: 'military_branch',
@@ -601,11 +596,11 @@ export default function LeadsAdmin() {
           </div>
           <div className="glass" style={{ padding: 14 }}>
             <strong>Assigned</strong>
-            <div style={{ fontSize: 24, marginTop: 8 }}>{totals.assigned}</div>
+            <div style={{ fontSize: 24, marginTop: 8 }}>{assignedCount}</div>
           </div>
           <div className="glass" style={{ padding: 14 }}>
             <strong>Unassigned</strong>
-            <div style={{ fontSize: 24, marginTop: 8 }}>{totals.unassigned}</div>
+            <div style={{ fontSize: 24, marginTop: 8 }}>{unassignedCount}</div>
           </div>
         </div>
 
@@ -665,11 +660,11 @@ export default function LeadsAdmin() {
             }}
           >
             <label>
-              Search
+              Search Loaded Rows
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Name, phone, email, city, state, batch..."
+                placeholder="Name, phone, city, state, ZIP..."
               />
             </label>
 
@@ -712,20 +707,25 @@ export default function LeadsAdmin() {
             </label>
 
             <label>
-              Show
+              Load
               <select value={pageSize} onChange={(e) => setPageSize(e.target.value)}>
                 <option value="10">10</option>
                 <option value="50">50</option>
                 <option value="100">100</option>
                 <option value="1000">1000</option>
-                <option value="all">Show All</option>
+                <option value="all">5000 Max</option>
               </select>
             </label>
           </div>
 
           <div className="top-gap" style={{ fontSize: 14, opacity: 0.85 }}>
-            Showing {visibleRows.length} of {filteredRows.length} loaded leads · Total in table:{' '}
-            {totalCount}
+            {loading ? 'Loading leads...' : null}
+            {!loading ? (
+              <>
+                Showing {visibleRows.length} loaded rows · Matching filter in database:{' '}
+                {filteredCount} · Total leads: {totalCount}
+              </>
+            ) : null}
           </div>
         </div>
 
