@@ -8,7 +8,8 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
-    flowType: 'pkce'
+    flowType: 'pkce',
+    storageKey: 'momentumx-auth'
   }
 });
 
@@ -42,10 +43,7 @@ export async function getSessionSafe() {
   return sessionRequest;
 }
 
-export async function waitForSessionSafe({
-  timeoutMs = 6000,
-  intervalMs = 250
-} = {}) {
+export async function waitForSessionSafe({ timeoutMs = 3000, intervalMs = 250 } = {}) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
