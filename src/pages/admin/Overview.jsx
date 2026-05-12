@@ -12,6 +12,26 @@ function formatMoney(value) {
   return `$${amount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 }
 
+function isSoldLead(lead) {
+  if (!lead) return false;
+
+  const status = String(lead.status || '').trim().toLowerCase();
+  const apSold = Number(lead.ap_sold || 0);
+
+  return (
+    lead.sale === true ||
+    status === 'sold' ||
+    apSold > 0 ||
+    Boolean(lead.sale_date) ||
+    Boolean(lead.company_sold) ||
+    Boolean(lead.product_sold)
+  );
+}
+
+function getLeadAp(lead) {
+  return isSoldLead(lead) ? Number(lead.ap_sold || 0) : 0;
+}
+
 function LeaderboardCard({ title, rows, renderValue }) {
   return (
     <div className="glass" style={{ padding: 16 }}>
@@ -52,36 +72,65 @@ function LeaderboardCard({ title, rows, renderValue }) {
 
 export default function Overview() {
   const [profiles, setProfiles] = useState([]);
-  const [leads, setLeads] = useState([]);
+  const [assignedLeads, setAssignedLeads] = useState([]);
+  const [unassignedCount, setUnassignedCount] = useState(0);
   const [rules, setRules] = useState([]);
   const [tiers, setTiers] = useState([]);
   const [kpiRows, setKpiRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState('');
 
   useEffect(() => {
     async function load() {
       setLoading(true);
+      setMessage('');
 
-      const [
-        { data: profileRows },
-        { data: leadRows },
-        { data: ruleRows },
-        { data: tierRows },
-        { data: kpiEntryRows }
-      ] = await Promise.all([
-        supabase.from('profiles').select('id, display_name, email, leads_paused, lead_access_banned'),
-        supabase.from('leads').select('id, assigned_to, sale, ap_sold, status'),
-        supabase.from('distribution_rules').select('id, active'),
-        supabase.from('tiers').select('id, active'),
-        supabase.from('kpi_entries').select('id, agent_id, dials, contacts, sits, sales, ap_sold')
-      ]);
+      try {
+        const [
+          { data: profileRows, error: profileError },
+          { data: leadRows, error: leadError },
+          { count: unassignedLeadCount, error: unassignedError },
+          { data: ruleRows },
+          { data: tierRows },
+          { data: kpiEntryRows, error: kpiError }
+        ] = await Promise.all([
+          supabase
+            .from('profiles')
+            .select('id, display_name, email, leads_paused, lead_access_banned'),
+          supabase
+            .from('leads')
+            .select(
+              'id, assigned_to, sale, ap_sold, status, sale_date, company_sold, product_sold'
+            )
+            .not('assigned_to', 'is', null),
+          supabase
+            .from('leads')
+            .select('id', { count: 'exact', head: true })
+            .is('assigned_to', null),
+          supabase.from('distribution_rules').select('id, active'),
+          supabase.from('tiers').select('id, active'),
+          supabase
+            .from('kpi_entries')
+            .select('id, agent_id, dials, contacts, sits, sales, ap_sold')
+        ]);
 
-      setProfiles(profileRows || []);
-      setLeads(leadRows || []);
-      setRules(ruleRows || []);
-      setTiers(tierRows || []);
-      setKpiRows(kpiEntryRows || []);
-      setLoading(false);
+        if (profileError) throw profileError;
+        if (leadError) throw leadError;
+        if (unassignedError) throw unassignedError;
+        if (kpiError) throw kpiError;
+
+        setProfiles(profileRows || []);
+        setAssignedLeads(leadRows || []);
+        setUnassignedCount(unassignedLeadCount || 0);
+        setRules(ruleRows || []);
+        setTiers(tierRows || []);
+        setKpiRows(kpiEntryRows || []);
+      } catch (error) {
+        console.error('Failed to load admin overview:', error);
+        setMessage(error.message || 'Failed to load admin overview.');
+      } finally {
+        setLoading(false);
+      }
     }
 
     load();
@@ -89,15 +138,15 @@ export default function Overview() {
 
   const stats = useMemo(() => {
     const totalAgents = profiles.length;
-    const activeAgents = profiles.filter((row) => !row.leads_paused && !row.lead_access_banned).length;
+    const activeAgents = profiles.filter(
+      (row) => !row.leads_paused && !row.lead_access_banned
+    ).length;
 
-    const unassignedLeads = leads.filter((row) => !row.assigned_to).length;
-    const assignedLeads = leads.filter((row) => !!row.assigned_to).length;
+    const assignedLeadCount = assignedLeads.length;
+    const soldLeads = assignedLeads.filter(isSoldLead).length;
+    const totalAp = assignedLeads.reduce((sum, row) => sum + getLeadAp(row), 0);
 
-    const soldLeads = leads.filter((row) => row.sale === true).length;
-    const totalAp = leads.reduce((sum, row) => sum + Number(row.ap_sold || 0), 0);
-
-    const conversionRate = assignedLeads > 0 ? (soldLeads / assignedLeads) * 100 : 0;
+    const conversionRate = assignedLeadCount > 0 ? (soldLeads / assignedLeadCount) * 100 : 0;
 
     const activeTiers = tiers.filter((row) => row.active).length;
     const activeRules = rules.filter((row) => row.active).length;
@@ -105,14 +154,15 @@ export default function Overview() {
     return {
       totalAgents,
       activeAgents,
-      unassignedLeads,
+      unassignedLeads: unassignedCount,
+      assignedLeads: assignedLeadCount,
       soldLeads,
       totalAp,
       conversionRate,
       activeTiers,
       activeRules
     };
-  }, [profiles, leads, rules, tiers]);
+  }, [profiles, assignedLeads, rules, tiers, unassignedCount]);
 
   const leaderboards = useMemo(() => {
     const byAgent = new Map();
@@ -134,26 +184,33 @@ export default function Overview() {
       });
     }
 
-    for (const lead of leads) {
+    for (const lead of assignedLeads) {
       if (!lead.assigned_to || !byAgent.has(lead.assigned_to)) continue;
+
       const row = byAgent.get(lead.assigned_to);
+      const sold = isSoldLead(lead);
 
       row.assignedLeads += 1;
-      row.apSold += Number(lead.ap_sold || 0);
 
-      if (lead.sale === true) {
+      if (sold) {
         row.soldLeads += 1;
+        row.apSold += getLeadAp(lead);
       }
     }
 
     for (const entry of kpiRows) {
       if (!entry.agent_id || !byAgent.has(entry.agent_id)) continue;
+
       const row = byAgent.get(entry.agent_id);
 
       row.dials += Number(entry.dials || 0);
       row.contacts += Number(entry.contacts || 0);
       row.sits += Number(entry.sits || 0);
       row.sales += Number(entry.sales || 0);
+
+      if (Number(entry.ap_sold || 0) > 0 && row.apSold <= 0) {
+        row.apSold += Number(entry.ap_sold || 0);
+      }
 
       row.kpiOutput = row.dials + row.contacts + row.sits + row.sales;
     }
@@ -168,8 +225,12 @@ export default function Overview() {
         .filter((row) => row.apSold > 0)
         .sort((a, b) => b.apSold - a.apSold)
         .slice(0, 5),
+      sales: rows
+        .filter((row) => row.soldLeads > 0)
+        .sort((a, b) => b.soldLeads - a.soldLeads)
+        .slice(0, 5),
       conversion: rows
-        .filter((row) => row.assignedLeads > 0)
+        .filter((row) => row.assignedLeads > 0 && row.soldLeads > 0)
         .sort((a, b) => b.conversionRate - a.conversionRate)
         .slice(0, 5),
       kpi: rows
@@ -177,7 +238,7 @@ export default function Overview() {
         .sort((a, b) => b.kpiOutput - a.kpiOutput)
         .slice(0, 5)
     };
-  }, [profiles, leads, kpiRows]);
+  }, [profiles, assignedLeads, kpiRows]);
 
   return (
     <div
@@ -193,7 +254,7 @@ export default function Overview() {
       <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
           <h1>Admin Overview</h1>
-          <p>Team-wide performance, lead inventory, and admin controls at a glance.</p>
+          <p>Team-wide performance, assigned lead sales, and admin controls at a glance.</p>
         </div>
       </div>
 
@@ -208,6 +269,8 @@ export default function Overview() {
           paddingRight: 4
         }}
       >
+        {message ? <div className="glass" style={{ padding: 14 }}>{message}</div> : null}
+
         <div className="grid grid-4">
           <StatCard
             label="Agents"
@@ -222,7 +285,7 @@ export default function Overview() {
           <StatCard
             label="Team AP"
             value={loading ? '—' : formatMoney(stats.totalAp)}
-            subtext={`${stats.soldLeads} sold leads`}
+            subtext={`${stats.soldLeads} sold assigned leads`}
           />
           <StatCard
             label="Team Conversion"
@@ -233,9 +296,11 @@ export default function Overview() {
 
         <div className="grid grid-4">
           <StatCard
-            label="Active Tiers"
-            value={loading ? '—' : stats.activeTiers}
+            label="Assigned Leads"
+            value={loading ? '—' : stats.assignedLeads}
+            subtext="Only assigned leads are checked for sales"
           />
+          <StatCard label="Active Tiers" value={loading ? '—' : stats.activeTiers} />
           <StatCard
             label="Distribution Rules"
             value={loading ? '—' : stats.activeRules}
@@ -257,6 +322,12 @@ export default function Overview() {
               title="Highest AP Sold"
               rows={leaderboards.ap}
               renderValue={(row) => formatMoney(row.apSold)}
+            />
+
+            <LeaderboardCard
+              title="Most Sold Leads"
+              rows={leaderboards.sales}
+              renderValue={(row) => row.soldLeads.toLocaleString()}
             />
 
             <LeaderboardCard
