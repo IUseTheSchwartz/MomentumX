@@ -5,8 +5,10 @@ import DataTable from '../../components/DataTable';
 import { writeAdminLog } from '../../lib/adminLog';
 
 const leadTypes = ['Veteran', 'Trucker IUL', 'Mortgage', 'General IUL'];
-const MAX_SHOW_ALL_ROWS = 5000;
 const UPLOAD_CHUNK_SIZE = 500;
+
+const LEAD_SELECT_COLUMNS =
+  'id,first_name,last_name,phone,email,address,city,state,zip,dob,military_branch,beneficiary_name,lead_type,lead_category,status,assigned_to,source_batch,created_at';
 
 function formatDate(value) {
   if (!value) return '—';
@@ -104,9 +106,7 @@ function parseCsv(text) {
 
       return row;
     })
-    .filter((row) =>
-      Object.values(row).some((value) => String(value || '').trim() !== '')
-    );
+    .filter((row) => Object.values(row).some((value) => String(value || '').trim() !== ''));
 }
 
 function getFirstValue(rawRow, keys) {
@@ -124,10 +124,7 @@ function isLeapYear(year) {
 }
 
 function isValidDateParts(year, month, day) {
-  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
-    return false;
-  }
-
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return false;
   if (year < 1900 || year > 2100) return false;
   if (month < 1 || month > 12) return false;
   if (day < 1) return false;
@@ -327,6 +324,10 @@ function validateMappedRows(leadRows) {
   return validRows;
 }
 
+function sanitizeSearch(value) {
+  return String(value || '').trim().replace(/[%_]/g, '');
+}
+
 function matchesSearch(row, query) {
   if (!query) return true;
 
@@ -355,10 +356,6 @@ function matchesSearch(row, query) {
 
 export default function LeadsAdmin() {
   const [rows, setRows] = useState([]);
-  const [totalCount, setTotalCount] = useState(0);
-  const [assignedCount, setAssignedCount] = useState(0);
-  const [unassignedCount, setUnassignedCount] = useState(0);
-  const [filteredCount, setFilteredCount] = useState(0);
 
   const [file, setFile] = useState(null);
   const [leadType, setLeadType] = useState('Veteran');
@@ -369,71 +366,66 @@ export default function LeadsAdmin() {
   const [message, setMessage] = useState('');
 
   const [search, setSearch] = useState('');
+  const [appliedSearch, setAppliedSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [assignedFilter, setAssignedFilter] = useState('all');
   const [sortOrder, setSortOrder] = useState('newest');
   const [pageSize, setPageSize] = useState('50');
 
-  async function loadCounts() {
-    const [{ count: total }, { count: assigned }, { count: unassigned }] = await Promise.all([
-      supabase.from('leads').select('id', { count: 'exact', head: true }),
-      supabase.from('leads').select('id', { count: 'exact', head: true }).not('assigned_to', 'is', null),
-      supabase.from('leads').select('id', { count: 'exact', head: true }).is('assigned_to', null)
-    ]);
-
-    setTotalCount(total || 0);
-    setAssignedCount(assigned || 0);
-    setUnassignedCount(unassigned || 0);
-  }
-
   async function load() {
     setLoading(true);
 
     try {
-      await loadCounts();
+      const limit = Number(pageSize || 50);
 
-      const limit = pageSize === 'all' ? MAX_SHOW_ALL_ROWS : Number(pageSize);
-
-      let countQuery = supabase.from('leads').select('id', { count: 'exact', head: true });
-      let dataQuery = supabase.from('leads').select('*');
+      let dataQuery = supabase.from('leads').select(LEAD_SELECT_COLUMNS);
 
       if (typeFilter !== 'all') {
-        countQuery = countQuery.eq('lead_type', typeFilter);
         dataQuery = dataQuery.eq('lead_type', typeFilter);
       }
 
       if (categoryFilter !== 'all') {
-        countQuery = countQuery.eq('lead_category', categoryFilter);
         dataQuery = dataQuery.eq('lead_category', categoryFilter);
       }
 
       if (assignedFilter === 'assigned') {
-        countQuery = countQuery.not('assigned_to', 'is', null);
         dataQuery = dataQuery.not('assigned_to', 'is', null);
       }
 
       if (assignedFilter === 'unassigned') {
-        countQuery = countQuery.is('assigned_to', null);
         dataQuery = dataQuery.is('assigned_to', null);
       }
 
-      const [{ count, error: countError }, { data, error }] = await Promise.all([
-        countQuery,
-        dataQuery
-          .order('created_at', { ascending: sortOrder === 'oldest' })
-          .limit(limit)
-      ]);
+      const safeSearch = sanitizeSearch(appliedSearch);
+      if (safeSearch) {
+        dataQuery = dataQuery.or(
+          [
+            `first_name.ilike.%${safeSearch}%`,
+            `last_name.ilike.%${safeSearch}%`,
+            `phone.ilike.%${safeSearch}%`,
+            `email.ilike.%${safeSearch}%`,
+            `city.ilike.%${safeSearch}%`,
+            `state.ilike.%${safeSearch}%`,
+            `zip.ilike.%${safeSearch}%`,
+            `source_batch.ilike.%${safeSearch}%`,
+            `beneficiary_name.ilike.%${safeSearch}%`,
+            `military_branch.ilike.%${safeSearch}%`
+          ].join(',')
+        );
+      }
 
-      if (countError) throw countError;
+      const { data, error } = await dataQuery
+        .order('created_at', { ascending: sortOrder === 'oldest' })
+        .limit(limit);
+
       if (error) throw error;
 
-      setFilteredCount(count || 0);
       setRows(data || []);
     } catch (error) {
       console.error('Failed to load admin leads:', error);
       setRows([]);
-      setFilteredCount(0);
+      setMessage(error.message || 'Failed to load leads.');
     } finally {
       setLoading(false);
     }
@@ -441,7 +433,7 @@ export default function LeadsAdmin() {
 
   useEffect(() => {
     load();
-  }, [typeFilter, categoryFilter, assignedFilter, sortOrder, pageSize]);
+  }, [typeFilter, categoryFilter, assignedFilter, sortOrder, pageSize, appliedSearch]);
 
   async function handleUpload(e) {
     e.preventDefault();
@@ -546,9 +538,19 @@ export default function LeadsAdmin() {
     }
   }
 
+  function applySearch(e) {
+    e.preventDefault();
+    setAppliedSearch(search.trim());
+  }
+
+  function clearSearch() {
+    setSearch('');
+    setAppliedSearch('');
+  }
+
   const visibleRows = useMemo(() => {
-    return rows.filter((row) => matchesSearch(row, search));
-  }, [rows, search]);
+    return rows.filter((row) => matchesSearch(row, appliedSearch));
+  }, [rows, appliedSearch]);
 
   const columns = [
     { key: 'first_name', label: 'First' },
@@ -601,22 +603,7 @@ export default function LeadsAdmin() {
         <div className="page-header" style={{ flexShrink: 0 }}>
           <div>
             <h1>Leads</h1>
-            <p>Upload lead inventory and review current lead records.</p>
-          </div>
-        </div>
-
-        <div className="grid grid-3" style={{ flexShrink: 0, marginBottom: 12 }}>
-          <div className="glass" style={{ padding: 14 }}>
-            <strong>Total Leads</strong>
-            <div style={{ fontSize: 24, marginTop: 8 }}>{totalCount}</div>
-          </div>
-          <div className="glass" style={{ padding: 14 }}>
-            <strong>Assigned</strong>
-            <div style={{ fontSize: 24, marginTop: 8 }}>{assignedCount}</div>
-          </div>
-          <div className="glass" style={{ padding: 14 }}>
-            <strong>Unassigned</strong>
-            <div style={{ fontSize: 24, marginTop: 8 }}>{unassignedCount}</div>
+            <p>Upload lead inventory and review a limited set of lead records.</p>
           </div>
         </div>
 
@@ -668,15 +655,17 @@ export default function LeadsAdmin() {
         </form>
 
         <div className="glass top-gap" style={{ padding: 12, flexShrink: 0 }}>
-          <div
+          <form
+            onSubmit={applySearch}
             style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
-              gap: 10
+              gap: 10,
+              alignItems: 'end'
             }}
           >
             <label>
-              Search Loaded Rows
+              Search
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -725,23 +714,28 @@ export default function LeadsAdmin() {
             <label>
               Load
               <select value={pageSize} onChange={(e) => setPageSize(e.target.value)}>
-                <option value="10">10</option>
+                <option value="25">25</option>
                 <option value="50">50</option>
                 <option value="100">100</option>
-                <option value="1000">1000</option>
-                <option value="all">5000 Max</option>
+                <option value="250">250</option>
+                <option value="500">500</option>
               </select>
             </label>
-          </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-primary btn-small" type="submit">
+                Search
+              </button>
+
+              <button className="btn btn-ghost btn-small" type="button" onClick={clearSearch}>
+                Clear
+              </button>
+            </div>
+          </form>
 
           <div className="top-gap" style={{ fontSize: 14, opacity: 0.85 }}>
-            {loading ? 'Loading leads...' : null}
-            {!loading ? (
-              <>
-                Showing {visibleRows.length} loaded rows · Matching filter in database:{' '}
-                {filteredCount} · Total leads: {totalCount}
-              </>
-            ) : null}
+            {loading ? 'Loading leads...' : `Showing ${visibleRows.length} loaded rows.`}
+            {appliedSearch ? ` Search: "${appliedSearch}".` : ''}
           </div>
         </div>
 
