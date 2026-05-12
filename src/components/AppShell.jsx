@@ -30,7 +30,7 @@ const adminLinks = [
 ];
 
 const PROFILE_TIMEOUT_MS = 8000;
-const REFRESH_INTERVAL_MS = 10000;
+const REFRESH_INTERVAL_MS = 60000;
 
 function withTimeout(promise, ms) {
   return Promise.race([
@@ -52,7 +52,6 @@ function getStoredViewAsAgent() {
 
 function NavBadge({ count }) {
   if (!count) return null;
-
   return <span className="nav-badge">{count > 99 ? '99+' : count}</span>;
 }
 
@@ -191,9 +190,7 @@ export default function AppShell({ admin = false }) {
           .select('id', { count: 'exact', head: true })
           .eq('status', 'pending');
 
-        if (!error) {
-          replacementRequests = count || 0;
-        }
+        if (!error) replacementRequests = count || 0;
       }
 
       const support = await loadSupportUnreadCount(userId, isAdmin);
@@ -208,6 +205,68 @@ export default function AppShell({ admin = false }) {
       console.error('Failed to load sidebar notification counts:', error);
     } finally {
       navRefreshInFlightRef.current = false;
+    }
+  }
+
+  async function loadProfileForSession(nextSession, { keepPreviousOnFailure = true } = {}) {
+    if (!mountedRef.current) return;
+
+    if (!nextSession) {
+      lastProfileRef.current = null;
+      setProfile(null);
+      setCourseStatus(null);
+      setNavCounts({
+        replacementRequests: 0,
+        support: 0
+      });
+      return;
+    }
+
+    const result = await withTimeout(
+      supabase.from('profiles').select('*').eq('id', nextSession.user.id).maybeSingle(),
+      PROFILE_TIMEOUT_MS
+    );
+
+    if (!mountedRef.current) return;
+
+    if (result?.timedOut) {
+      if (keepPreviousOnFailure && lastProfileRef.current) {
+        setProfile(lastProfileRef.current);
+      }
+      return;
+    }
+
+    const { data, error } = result;
+
+    if (error) {
+      if (keepPreviousOnFailure && lastProfileRef.current) {
+        setProfile(lastProfileRef.current);
+      } else {
+        setProfile(null);
+      }
+      return;
+    }
+
+    const safeProfile = data || null;
+    lastProfileRef.current = safeProfile;
+    setProfile(safeProfile);
+  }
+
+  async function refreshFromSession({ keepPreviousOnFailure = true } = {}) {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+
+    try {
+      const {
+        data: { session: currentSession }
+      } = await supabase.auth.getSession();
+
+      if (!mountedRef.current) return;
+
+      setSession(currentSession ?? null);
+      await loadProfileForSession(currentSession ?? null, { keepPreviousOnFailure });
+    } finally {
+      refreshInFlightRef.current = false;
     }
   }
 
@@ -237,94 +296,11 @@ export default function AppShell({ admin = false }) {
   useEffect(() => {
     mountedRef.current = true;
 
-    async function loadProfileForSession(nextSession, { keepPreviousOnFailure = true } = {}) {
-      if (!mountedRef.current) return;
-
-      if (!nextSession) {
-        lastProfileRef.current = null;
-        setProfile(null);
-        setCourseStatus(null);
-        setNavCounts({
-          replacementRequests: 0,
-          support: 0
-        });
-        return;
-      }
-
-      const result = await withTimeout(
-        supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', nextSession.user.id)
-          .maybeSingle(),
-        PROFILE_TIMEOUT_MS
-      );
-
-      if (!mountedRef.current) return;
-
-      if (result?.timedOut) {
-        if (keepPreviousOnFailure && lastProfileRef.current) {
-          setProfile(lastProfileRef.current);
-        }
-
-        await Promise.all([
-          loadCourseStatus(effectiveAgentId || nextSession.user.id),
-          loadNavCountsForUser(nextSession.user.id, admin)
-        ]);
-
-        return;
-      }
-
-      const { data, error } = result;
-
-      if (error) {
-        if (keepPreviousOnFailure && lastProfileRef.current) {
-          setProfile(lastProfileRef.current);
-        } else {
-          setProfile(null);
-        }
-
-        await Promise.all([
-          loadCourseStatus(effectiveAgentId || nextSession.user.id),
-          loadNavCountsForUser(nextSession.user.id, admin)
-        ]);
-
-        return;
-      }
-
-      const safeProfile = data || null;
-      lastProfileRef.current = safeProfile;
-      setProfile(safeProfile);
-
-      await Promise.all([
-        loadCourseStatus(effectiveAgentId || nextSession.user.id),
-        loadNavCountsForUser(nextSession.user.id, admin)
-      ]);
-    }
-
-    async function refreshFromSession({ keepPreviousOnFailure = true } = {}) {
-      if (refreshInFlightRef.current) return;
-      refreshInFlightRef.current = true;
-
-      try {
-        const {
-          data: { session: currentSession }
-        } = await supabase.auth.getSession();
-
-        if (!mountedRef.current) return;
-
-        setSession(currentSession ?? null);
-        await loadProfileForSession(currentSession ?? null, { keepPreviousOnFailure });
-      } finally {
-        refreshInFlightRef.current = false;
-      }
-    }
-
     refreshFromSession({ keepPreviousOnFailure: false });
 
     const {
       data: { subscription }
-    } = supabase.auth.onAuthStateChange(async (event, nextSession) => {
+    } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (!mountedRef.current) return;
 
       if (event === 'SIGNED_OUT') {
@@ -343,28 +319,14 @@ export default function AppShell({ admin = false }) {
       }
 
       setSession(nextSession ?? null);
-      await loadProfileForSession(nextSession ?? null, { keepPreviousOnFailure: true });
+      void loadProfileForSession(nextSession ?? null, { keepPreviousOnFailure: true });
     });
-
-    const handleVisible = async () => {
-      if (document.visibilityState !== 'visible') return;
-      await refreshFromSession({ keepPreviousOnFailure: true });
-    };
-
-    const handleFocus = async () => {
-      await refreshFromSession({ keepPreviousOnFailure: true });
-    };
-
-    document.addEventListener('visibilitychange', handleVisible);
-    window.addEventListener('focus', handleFocus);
 
     return () => {
       mountedRef.current = false;
       subscription.unsubscribe();
-      document.removeEventListener('visibilitychange', handleVisible);
-      window.removeEventListener('focus', handleFocus);
     };
-  }, [admin, effectiveAgentId]);
+  }, []);
 
   useEffect(() => {
     if (!session?.user?.id) return;
@@ -412,6 +374,8 @@ export default function AppShell({ admin = false }) {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'profiles' },
         () => {
+          void refreshFromSession({ keepPreviousOnFailure: true });
+
           if (isViewingAsAgent && viewAsAgent?.id) {
             loadViewAsProfile(viewAsAgent.id);
           }
@@ -455,14 +419,8 @@ export default function AppShell({ admin = false }) {
   }
 
   function getBadgeCountForPath(path) {
-    if (path === '/admin/replacement-requests') {
-      return navCounts.replacementRequests;
-    }
-
-    if (path === '/admin/support' || path === '/app/support') {
-      return navCounts.support;
-    }
-
+    if (path === '/admin/replacement-requests') return navCounts.replacementRequests;
+    if (path === '/admin/support' || path === '/app/support') return navCounts.support;
     return 0;
   }
 
@@ -528,9 +486,7 @@ export default function AppShell({ admin = false }) {
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
           {isLockedAgent ? (
-            <div className="sidebar-alert">
-              Complete the course to unlock Momentum X.
-            </div>
+            <div className="sidebar-alert">Complete the course to unlock Momentum X.</div>
           ) : null}
 
           {isViewingAsAgent ? (
