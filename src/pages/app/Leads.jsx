@@ -55,13 +55,22 @@ function getStatusBucket(row) {
   return 'new';
 }
 
+function getLeadAddressText(row) {
+  return [row.address, row.city, row.state, row.zip].filter(Boolean).join(', ');
+}
+
 function matchesSearch(row, query) {
   if (!query) return true;
+
   const text = [
     row.first_name,
     row.last_name,
     row.phone,
     row.email,
+    row.address,
+    row.city,
+    row.state,
+    row.zip,
     row.lead_type,
     row.status,
     row.beneficiary_name,
@@ -93,6 +102,10 @@ function buildCsv(rows) {
     'Last Name',
     'Phone',
     'Email',
+    'Address',
+    'City',
+    'State',
+    'ZIP',
     'DOB',
     'Military Branch',
     'Beneficiary',
@@ -123,6 +136,10 @@ function buildCsv(rows) {
       row.last_name || '',
       row.phone || '',
       row.email || '',
+      row.address || '',
+      row.city || '',
+      row.state || '',
+      row.zip || '',
       row.dob || '',
       row.military_branch || '',
       row.beneficiary_name || '',
@@ -134,11 +151,11 @@ function buildCsv(rows) {
       row.do_not_call ? 'Yes' : 'No',
       row.sit ? 'Yes' : 'No',
       row.sale ? 'Yes' : 'No',
-      Number(row.ap_sold || 0),
-      row.sale_date || '',
-      row.effective_date || '',
-      row.company_sold || '',
-      row.product_sold || '',
+      row.sale ? Number(row.ap_sold || 0) : '',
+      row.sale ? row.sale_date || '' : '',
+      row.sale ? row.effective_date || '' : '',
+      row.sale ? row.company_sold || '' : '',
+      row.sale ? row.product_sold || '' : '',
       row.notes || '',
       row.created_at || '',
       row.assigned_at || '',
@@ -287,10 +304,7 @@ export default function Leads() {
   }
 
   async function persistLeadPatch(id, patch) {
-    let query = supabase
-      .from('leads')
-      .update(patch)
-      .eq('id', id);
+    let query = supabase.from('leads').update(patch).eq('id', id);
 
     if (sessionUserId) {
       query = query.eq('assigned_to', sessionUserId);
@@ -517,9 +531,7 @@ export default function Leads() {
   function openReplacementModal(row) {
     setReplacementLead(row);
     setReplacementError('');
-    setReplacementForm({
-      reason: ''
-    });
+    setReplacementForm({ reason: '' });
   }
 
   async function submitReplacementRequest(e) {
@@ -636,9 +648,7 @@ export default function Leads() {
 
       if (uploadError) throw uploadError;
 
-      const { data: publicUrlData } = supabase.storage
-        .from('recordings')
-        .getPublicUrl(storagePath);
+      const { data: publicUrlData } = supabase.storage.from('recordings').getPublicUrl(storagePath);
 
       const recordingUrl = publicUrlData?.publicUrl || null;
 
@@ -795,7 +805,7 @@ export default function Leads() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Name, phone, email..."
+              placeholder="Name, phone, email, city, state, ZIP..."
             />
           </label>
 
@@ -873,6 +883,7 @@ export default function Leads() {
           const replacementBadge = getReplacementBadge(replacementRequest);
           const disableReplacementButton =
             replacementRequest?.status === 'pending' || replacementRequest?.status === 'accepted';
+          const addressText = getLeadAddressText(row);
 
           return (
             <div key={row.id} className="lead-card glass">
@@ -884,6 +895,11 @@ export default function Leads() {
                   <div className="lead-meta">
                     {row.phone || 'No phone'} · {row.lead_type || '—'} · {row.lead_category || '—'} · Created {formatDate(row.created_at)}
                   </div>
+                  {addressText ? (
+                    <div className="lead-meta" style={{ marginTop: 4 }}>
+                      {addressText}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="lead-status-stack">
@@ -900,6 +916,18 @@ export default function Leads() {
               <div className="lead-extra">
                 <div className="lead-extra-item">
                   <strong>Email:</strong> {row.email || '—'}
+                </div>
+                <div className="lead-extra-item">
+                  <strong>Address:</strong> {row.address || '—'}
+                </div>
+                <div className="lead-extra-item">
+                  <strong>City:</strong> {row.city || '—'}
+                </div>
+                <div className="lead-extra-item">
+                  <strong>State:</strong> {row.state || '—'}
+                </div>
+                <div className="lead-extra-item">
+                  <strong>ZIP:</strong> {row.zip || '—'}
                 </div>
                 <div className="lead-extra-item">
                   <strong>DOB:</strong> {formatDateOnly(row.dob)}
@@ -1005,23 +1033,25 @@ export default function Leads() {
                 </button>
               </div>
 
-              <div className="lead-extra">
-                <div className="lead-extra-item">
-                  <strong>AP Sold:</strong> {currency(row.ap_sold || 0)}
+              {row.sale ? (
+                <div className="lead-extra">
+                  <div className="lead-extra-item">
+                    <strong>AP Sold:</strong> {currency(row.ap_sold || 0)}
+                  </div>
+                  <div className="lead-extra-item">
+                    <strong>Sale Date:</strong> {formatDate(row.sale_date)}
+                  </div>
+                  <div className="lead-extra-item">
+                    <strong>Effective Date:</strong> {formatDate(row.effective_date)}
+                  </div>
+                  <div className="lead-extra-item">
+                    <strong>Company:</strong> {row.company_sold || '—'}
+                  </div>
+                  <div className="lead-extra-item">
+                    <strong>Product:</strong> {row.product_sold || '—'}
+                  </div>
                 </div>
-                <div className="lead-extra-item">
-                  <strong>Sale Date:</strong> {formatDate(row.sale_date)}
-                </div>
-                <div className="lead-extra-item">
-                  <strong>Effective Date:</strong> {formatDate(row.effective_date)}
-                </div>
-                <div className="lead-extra-item">
-                  <strong>Company:</strong> {row.company_sold || '—'}
-                </div>
-                <div className="lead-extra-item">
-                  <strong>Product:</strong> {row.product_sold || '—'}
-                </div>
-              </div>
+              ) : null}
 
               <div className="lead-notes">
                 <label>
