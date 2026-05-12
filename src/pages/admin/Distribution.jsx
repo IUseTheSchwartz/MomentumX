@@ -3,6 +3,8 @@ import { supabase } from '../../lib/supabaseClient';
 import { writeAdminLog } from '../../lib/adminLog';
 
 const PROGRAM_DAYS = 90;
+const leadTypes = ['Veteran', 'Trucker IUL', 'Mortgage', 'General IUL'];
+const categories = ['aged', 'fresh'];
 
 const blankSetup = {
   name: '',
@@ -44,13 +46,23 @@ function formatNumber(value) {
   return Number(value || 0).toLocaleString();
 }
 
+function getAllowedLeadTypes(profile) {
+  return Array.isArray(profile?.allowed_lead_types)
+    ? profile.allowed_lead_types.filter(Boolean)
+    : [];
+}
+
+function makeInventoryKey(category, leadType) {
+  return `${category}__${leadType}`;
+}
+
+function getInventoryCount(inventoryByKey, category, leadType) {
+  return inventoryByKey[makeInventoryKey(category, leadType)] || 0;
+}
+
 export default function Distribution() {
   const [setups, setSetups] = useState([]);
   const [profiles, setProfiles] = useState([]);
-  const [inventory, setInventory] = useState({
-    aged: 0,
-    fresh: 0
-  });
   const [form, setForm] = useState(blankSetup);
   const [manualGrant, setManualGrant] = useState(blankManualGrant);
   const [message, setMessage] = useState('');
@@ -58,43 +70,28 @@ export default function Distribution() {
   const [manualSaving, setManualSaving] = useState(false);
   const [runningSetupId, setRunningSetupId] = useState('');
   const [confirmSetup, setConfirmSetup] = useState(null);
+  const [confirmLoading, setConfirmLoading] = useState(false);
+  const [inventoryByKey, setInventoryByKey] = useState({});
 
   async function load() {
     setMessage('');
 
-    const [{ data: setupRows }, { data: profileRows }, { count: agedCount }, { count: freshCount }] =
-      await Promise.all([
-        supabase
-          .from('lead_distribution_setups')
-          .select('*')
-          .eq('active', true)
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('profiles')
-          .select(
-            'id, display_name, email, lead_program_active, lead_program_started_at, leads_paused, lead_access_banned, allowed_lead_types'
-          )
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('leads')
-          .select('id', { count: 'exact', head: true })
-          .is('assigned_to', null)
-          .eq('lead_category', 'aged')
-          .eq('status', 'New'),
-        supabase
-          .from('leads')
-          .select('id', { count: 'exact', head: true })
-          .is('assigned_to', null)
-          .eq('lead_category', 'fresh')
-          .eq('status', 'New')
-      ]);
+    const [{ data: setupRows }, { data: profileRows }] = await Promise.all([
+      supabase
+        .from('lead_distribution_setups')
+        .select('*')
+        .eq('active', true)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('profiles')
+        .select(
+          'id, display_name, email, lead_program_active, lead_program_started_at, leads_paused, lead_access_banned, allowed_lead_types'
+        )
+        .order('created_at', { ascending: false })
+    ]);
 
     setSetups(setupRows || []);
     setProfiles(profileRows || []);
-    setInventory({
-      aged: agedCount || 0,
-      fresh: freshCount || 0
-    });
   }
 
   useEffect(() => {
@@ -118,6 +115,27 @@ export default function Distribution() {
     const freshPerAgent = Number(setup?.fresh_amount || 0);
     const agentCount = activeAgents.length;
 
+    const requestedByKey = {};
+    const agentsByLeadType = {};
+
+    for (const agent of activeAgents) {
+      const allowedLeadTypes = getAllowedLeadTypes(agent);
+
+      for (const leadType of allowedLeadTypes) {
+        agentsByLeadType[leadType] = (agentsByLeadType[leadType] || 0) + 1;
+
+        if (agedPerAgent > 0) {
+          const key = makeInventoryKey('aged', leadType);
+          requestedByKey[key] = (requestedByKey[key] || 0) + agedPerAgent;
+        }
+
+        if (freshPerAgent > 0) {
+          const key = makeInventoryKey('fresh', leadType);
+          requestedByKey[key] = (requestedByKey[key] || 0) + freshPerAgent;
+        }
+      }
+    }
+
     return {
       agentCount,
       agedPerAgent,
@@ -125,8 +143,93 @@ export default function Distribution() {
       totalPerAgent: agedPerAgent + freshPerAgent,
       totalAged: agentCount * agedPerAgent,
       totalFresh: agentCount * freshPerAgent,
-      totalLeads: agentCount * (agedPerAgent + freshPerAgent)
+      totalLeads: agentCount * (agedPerAgent + freshPerAgent),
+      requestedByKey,
+      agentsByLeadType
     };
+  }
+
+  function getManualPreview() {
+    const agedAmount = Number(manualGrant.aged_amount || 0);
+    const freshAmount = Number(manualGrant.fresh_amount || 0);
+    const allowedLeadTypes = getAllowedLeadTypes(selectedManualAgent);
+
+    const requestedByKey = {};
+
+    for (const leadType of allowedLeadTypes) {
+      if (agedAmount > 0) {
+        requestedByKey[makeInventoryKey('aged', leadType)] = agedAmount;
+      }
+
+      if (freshAmount > 0) {
+        requestedByKey[makeInventoryKey('fresh', leadType)] = freshAmount;
+      }
+    }
+
+    return {
+      allowedLeadTypes,
+      requestedByKey
+    };
+  }
+
+  async function loadInventoryForPreview(requestedByKey) {
+    const neededPairs = Object.keys(requestedByKey || {})
+      .map((key) => {
+        const [category, leadType] = key.split('__');
+        return { category, leadType };
+      })
+      .filter((row) => row.category && row.leadType);
+
+    if (!neededPairs.length) {
+      setInventoryByKey({});
+      return {};
+    }
+
+    setConfirmLoading(true);
+
+    try {
+      const results = await Promise.all(
+        neededPairs.map(async ({ category, leadType }) => {
+          const { count, error } = await supabase
+            .from('leads')
+            .select('id', { count: 'exact', head: true })
+            .is('assigned_to', null)
+            .eq('status', 'New')
+            .eq('lead_category', category)
+            .eq('lead_type', leadType);
+
+          if (error) throw error;
+
+          return {
+            key: makeInventoryKey(category, leadType),
+            count: count || 0
+          };
+        })
+      );
+
+      const nextInventory = {};
+      for (const row of results) {
+        nextInventory[row.key] = row.count;
+      }
+
+      setInventoryByKey(nextInventory);
+      return nextInventory;
+    } finally {
+      setConfirmLoading(false);
+    }
+  }
+
+  async function openRunConfirm(setup) {
+    const preview = getRunPreview(setup);
+    setConfirmSetup(setup);
+    setInventoryByKey({});
+    setMessage('');
+
+    try {
+      await loadInventoryForPreview(preview.requestedByKey);
+    } catch (error) {
+      setMessage(error.message || 'Could not load inventory preview.');
+    }
   }
 
   async function getUnassignedLeadIds(category, amount, allowedLeadTypes) {
@@ -194,9 +297,7 @@ export default function Distribution() {
         return;
       }
 
-      const allowedLeadTypes = Array.isArray(agent.allowed_lead_types)
-        ? agent.allowed_lead_types.filter(Boolean)
-        : [];
+      const allowedLeadTypes = getAllowedLeadTypes(agent);
 
       const [agedLeadIds, freshLeadIds] = await Promise.all([
         getUnassignedLeadIds('aged', agedAmount, allowedLeadTypes),
@@ -352,6 +453,7 @@ export default function Distribution() {
       );
 
       setConfirmSetup(null);
+      setInventoryByKey({});
       await load();
     } catch (error) {
       setMessage(error.message || 'Distribution run failed.');
@@ -359,6 +461,8 @@ export default function Distribution() {
       setRunningSetupId('');
     }
   }
+
+  const manualPreview = getManualPreview();
 
   return (
     <div
@@ -387,7 +491,7 @@ export default function Distribution() {
           </div>
         </div>
 
-        <div className="grid grid-4" style={{ marginBottom: 14 }}>
+        <div className="grid grid-2" style={{ marginBottom: 14 }}>
           <div className="glass" style={{ padding: 14 }}>
             <div style={{ fontSize: 13, opacity: 0.75 }}>Active Agents</div>
             <div style={{ fontSize: 28, fontWeight: 800 }}>{activeAgents.length}</div>
@@ -398,18 +502,6 @@ export default function Distribution() {
             <div style={{ fontSize: 13, opacity: 0.75 }}>Saved Setups</div>
             <div style={{ fontSize: 28, fontWeight: 800 }}>{setups.length}</div>
             <div style={{ fontSize: 13, opacity: 0.75 }}>Manual run templates</div>
-          </div>
-
-          <div className="glass" style={{ padding: 14 }}>
-            <div style={{ fontSize: 13, opacity: 0.75 }}>Aged Inventory</div>
-            <div style={{ fontSize: 28, fontWeight: 800 }}>{formatNumber(inventory.aged)}</div>
-            <div style={{ fontSize: 13, opacity: 0.75 }}>Unassigned New leads</div>
-          </div>
-
-          <div className="glass" style={{ padding: 14 }}>
-            <div style={{ fontSize: 13, opacity: 0.75 }}>Fresh Inventory</div>
-            <div style={{ fontSize: 28, fontWeight: 800 }}>{formatNumber(inventory.fresh)}</div>
-            <div style={{ fontSize: 13, opacity: 0.75 }}>Unassigned New leads</div>
           </div>
         </div>
 
@@ -483,13 +575,9 @@ export default function Distribution() {
           {selectedManualAgent ? (
             <div style={{ marginTop: 12, fontSize: 13, opacity: 0.78 }}>
               Allowed lead types for this agent:{' '}
-              <strong>{(selectedManualAgent.allowed_lead_types || []).join(', ') || 'None selected'}</strong>
+              <strong>{manualPreview.allowedLeadTypes.join(', ') || 'None selected'}</strong>
             </div>
           ) : null}
-
-          <div style={{ marginTop: 12, fontSize: 13, opacity: 0.78 }}>
-            Available inventory: {formatNumber(inventory.aged)} aged / {formatNumber(inventory.fresh)} fresh.
-          </div>
 
           <div style={{ marginTop: 14 }}>
             <button className="btn btn-primary" type="submit" disabled={manualSaving}>
@@ -587,7 +675,7 @@ export default function Distribution() {
                       <button
                         className="btn btn-primary btn-small"
                         type="button"
-                        onClick={() => setConfirmSetup(setup)}
+                        onClick={() => openRunConfirm(setup)}
                         disabled={runningSetupId === setup.id}
                       >
                         {runningSetupId === setup.id ? 'Running...' : 'Run'}
@@ -686,7 +774,10 @@ export default function Distribution() {
 
       {confirmSetup ? (
         <div
-          onClick={() => setConfirmSetup(null)}
+          onClick={() => {
+            setConfirmSetup(null);
+            setInventoryByKey({});
+          }}
           style={{
             position: 'fixed',
             inset: 0,
@@ -702,13 +793,36 @@ export default function Distribution() {
             className="glass"
             onClick={(e) => e.stopPropagation()}
             style={{
-              width: 'min(620px, 96vw)',
+              width: 'min(780px, 96vw)',
+              maxHeight: '90vh',
+              overflow: 'auto',
               padding: 20,
               border: '1px solid rgba(255,255,255,0.12)'
             }}
           >
             {(() => {
               const preview = getRunPreview(confirmSetup);
+              const requestedRows = Object.keys(preview.requestedByKey)
+                .map((key) => {
+                  const [category, leadType] = key.split('__');
+                  const requested = preview.requestedByKey[key] || 0;
+                  const available = getInventoryCount(inventoryByKey, category, leadType);
+
+                  return {
+                    key,
+                    category,
+                    leadType,
+                    requested,
+                    available,
+                    remainingAfterRun: available - requested
+                  };
+                })
+                .sort((a, b) => {
+                  if (a.leadType !== b.leadType) return a.leadType.localeCompare(b.leadType);
+                  return a.category.localeCompare(b.category);
+                });
+
+              const shortages = requestedRows.filter((row) => row.remainingAfterRun < 0);
 
               return (
                 <>
@@ -732,14 +846,14 @@ export default function Distribution() {
                     </div>
 
                     <div className="glass" style={{ padding: 12 }}>
-                      <div style={{ fontSize: 13, opacity: 0.75 }}>Total Leads</div>
+                      <div style={{ fontSize: 13, opacity: 0.75 }}>Total Leads Requested</div>
                       <div style={{ fontSize: 24, fontWeight: 800 }}>
                         {formatNumber(preview.totalLeads)}
                       </div>
                     </div>
 
                     <div className="glass" style={{ padding: 12 }}>
-                      <div style={{ fontSize: 13, opacity: 0.75 }}>Aged</div>
+                      <div style={{ fontSize: 13, opacity: 0.75 }}>Aged Requested</div>
                       <div style={{ fontSize: 24, fontWeight: 800 }}>
                         {formatNumber(preview.totalAged)}
                       </div>
@@ -749,7 +863,7 @@ export default function Distribution() {
                     </div>
 
                     <div className="glass" style={{ padding: 12 }}>
-                      <div style={{ fontSize: 13, opacity: 0.75 }}>Fresh</div>
+                      <div style={{ fontSize: 13, opacity: 0.75 }}>Fresh Requested</div>
                       <div style={{ fontSize: 24, fontWeight: 800 }}>
                         {formatNumber(preview.totalFresh)}
                       </div>
@@ -759,8 +873,65 @@ export default function Distribution() {
                     </div>
                   </div>
 
-                  <div style={{ marginTop: 14, opacity: 0.8, fontSize: 14 }}>
-                    Inventory now: {formatNumber(inventory.aged)} aged and {formatNumber(inventory.fresh)} fresh.
+                  <div style={{ marginTop: 16 }}>
+                    <h3 style={{ marginBottom: 8 }}>Inventory Check</h3>
+
+                    {confirmLoading ? (
+                      <div style={{ opacity: 0.75 }}>Checking inventory...</div>
+                    ) : !requestedRows.length ? (
+                      <div style={{ opacity: 0.75 }}>No leads requested.</div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {requestedRows.map((row) => (
+                          <div
+                            key={row.key}
+                            style={{
+                              display: 'grid',
+                              gridTemplateColumns: '1.2fr 1fr 1fr 1fr',
+                              gap: 10,
+                              padding: 10,
+                              borderRadius: 12,
+                              border:
+                                row.remainingAfterRun < 0
+                                  ? '1px solid rgba(239,68,68,0.35)'
+                                  : '1px solid rgba(255,255,255,0.08)'
+                            }}
+                          >
+                            <div>
+                              <strong>{row.leadType}</strong>
+                              <div style={{ fontSize: 12, opacity: 0.7 }}>{row.category}</div>
+                            </div>
+
+                            <div>
+                              <div style={{ fontSize: 12, opacity: 0.7 }}>Available</div>
+                              <strong>{formatNumber(row.available)}</strong>
+                            </div>
+
+                            <div>
+                              <div style={{ fontSize: 12, opacity: 0.7 }}>About to Send</div>
+                              <strong>{formatNumber(row.requested)}</strong>
+                            </div>
+
+                            <div>
+                              <div style={{ fontSize: 12, opacity: 0.7 }}>Left After</div>
+                              <strong
+                                style={{
+                                  color: row.remainingAfterRun < 0 ? '#f87171' : '#34d399'
+                                }}
+                              >
+                                {formatNumber(row.remainingAfterRun)}
+                              </strong>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {shortages.length ? (
+                      <div style={{ marginTop: 10, color: '#f87171', fontWeight: 700 }}>
+                        Warning: some lead types do not have enough unassigned New inventory. The run may assign fewer leads than requested.
+                      </div>
+                    ) : null}
                   </div>
 
                   <div
@@ -772,7 +943,14 @@ export default function Distribution() {
                       flexWrap: 'wrap'
                     }}
                   >
-                    <button className="btn btn-ghost" type="button" onClick={() => setConfirmSetup(null)}>
+                    <button
+                      className="btn btn-ghost"
+                      type="button"
+                      onClick={() => {
+                        setConfirmSetup(null);
+                        setInventoryByKey({});
+                      }}
+                    >
                       Cancel
                     </button>
 
@@ -780,7 +958,11 @@ export default function Distribution() {
                       className="btn btn-primary"
                       type="button"
                       onClick={() => runDistribution(confirmSetup)}
-                      disabled={runningSetupId === confirmSetup.id || preview.agentCount <= 0}
+                      disabled={
+                        runningSetupId === confirmSetup.id ||
+                        preview.agentCount <= 0 ||
+                        confirmLoading
+                      }
                     >
                       {runningSetupId === confirmSetup.id ? 'Running...' : 'Yes, Run It'}
                     </button>
